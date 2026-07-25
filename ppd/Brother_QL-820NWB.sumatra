@@ -1,0 +1,15 @@
+# printlib Etikettendrucker-Konfiguration fuer SumatraPDF
+#
+# Brother QL-Etikettendrucker: feste Rollenbreite, variable Etikettlaenge.
+# Wichtige Punkte:
+#   - scale origsize    -- PDF-Groesse exakt beibehalten (kein Skalieren)
+#   - paper match       -- Drucker passt Papier an PDF-Groesse an
+#   - silent 1          -- kein Fehlerdialog bei Routinejobs
+#   - kein source-Eintrag (Etikettendrucker haben nur eine Rolle)
+#   - kein duplex-Eintrag (Etikettendrucker drucken nicht beidseitig)
+
+printer   "Brother QL-810W"
+paper     match
+scale     origsize
+silent    1
+copies    1

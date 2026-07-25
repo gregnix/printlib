@@ -1,0 +1,9 @@
+# internal development notes (not published)
+nogit/
+
+# generated test PDFs (reproduce with demo/make-testpdfs.tcl)
+demo/test_*.pdf
+demo/demo-*.pdf
+test/out/*
+tmp/
+*.tmp

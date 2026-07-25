@@ -1,0 +1,18 @@
+# printlib Druckerkonfiguration fuer pdftocairo
+#
+# Diese Datei ist ein Beispiel — anpassen oder als Vorlage nutzen.
+# Dateiname-Konvention: ppd/<normalisierter_druckername>.pdftocairo
+# (Leerzeichen und Sonderzeichen im Namen werden zu '_' ersetzt)
+#
+# Werte mit Leerzeichen in Anfuehrungszeichen.
+# Kommentare beginnen mit #.
+
+printer   "HP LaserJet P2055"
+source    upper      ;# Kassette: upper | lower | middle | manual | auto | envelope
+duplex    long       ;# off | long | short
+paper     A4         ;# A4 | A3 | letter | legal | ...
+scale     fit        ;# noscale | fit | shrink | expand | match | origsize
+
+# Optional:
+# copies   1         ;# nur SumatraPDF native
+# silent   0         ;# 0 | 1  Fehlerdialog unterdruecken

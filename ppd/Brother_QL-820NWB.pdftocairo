@@ -1,0 +1,6 @@
+# printlib Druckerkonfiguration fuer pdftocairo
+# Erzeugt: 2026-05-21 08:24 UTC
+
+printer "Brother QL-820NWB"
+scale noscale
+paper DK44205
