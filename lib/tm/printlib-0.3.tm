@@ -1,4 +1,4 @@
-# printlib-0.2.tm
+# printlib-0.3.tm
 #
 # Plattformuebergreifende PDF-Druckbibliothek fuer Tcl/Tk
 # Unterstuetzt: pdftocairo (Vektor), SumatraPDF (Bitmap-Fallback)
@@ -66,10 +66,14 @@ namespace eval ::printlib {
     # Wer ein Backend hinzufuegt, ergaenzt hier einen Eintrag und die
     # zugehoerige _print_<name> / _available-Pruefung -- nicht mehr drei
     # verstreute Gueltigkeitslisten.
+    # Backend-Registry. Ein Eintrag je Backend, an einer Stelle:
+    #   platforms  wo das Backend ueberhaupt in Frage kommt
+    #   ppd        1, wenn es eigene .<backend>-Konfigdateien liest
+    #              (pdftocairo/sumatra); lp und pdfium haben keine.
     variable backends {
-        pdftocairo {platforms {windows}}
+        pdftocairo {platforms {windows} ppd 1}
         pdfium     {platforms {windows}}
-        sumatra    {platforms {windows}}
+        sumatra    {platforms {windows} ppd 1}
         lp         {platforms {unix}}
     }
 
@@ -211,6 +215,17 @@ proc ::printlib::_backendsFor {platform} {
     set out {}
     dict for {name spec} $backends {
         if {$platform in [dict get $spec platforms]} { lappend out $name }
+    }
+    return $out
+}
+
+# Backends mit eigenen .<backend>-Konfigdateien (PPD), aus der Registry.
+# Ersetzt die frueher mehrfach kopierte Liste {pdftocairo sumatra}.
+proc ::printlib::_ppdBackends {} {
+    variable backends
+    set out {}
+    dict for {name spec} $backends {
+        if {[dict exists $spec ppd] && [dict get $spec ppd]} { lappend out $name }
     }
     return $out
 }
@@ -1473,8 +1488,8 @@ proc ::printlib::_qlModelClass {printer} {
 # Rueckgabe: 0 / 1
 # -------------------------------------------------------------------------
 proc ::printlib::isLabelPrinter {printer} {
-    # 1) PPD pruefen (beide Backend-Varianten)
-    foreach be {pdftocairo sumatra} {
+    # 1) PPD pruefen (alle Backends mit Konfigdateien)
+    foreach be [_ppdBackends] {
         set p [findPpdFile $printer $be]
         if {$p ne ""} {
             if {![catch {set ppd [loadPpdFile $p]}]} {
@@ -1832,7 +1847,7 @@ proc ::printlib::_ppdSearchDirs {} {
 #   -> /pfad/zu/ppd/HP_LaserJet_P2055.pdftocairo
 # -------------------------------------------------------------------------
 proc ::printlib::findPpdFile {printer backend} {
-    if {$backend ni {pdftocairo sumatra}} {
+    if {$backend ni [_ppdBackends]} {
         error "printlib::findPpdFile: ungueltiges Backend '$backend'"
     }
     set name [_normPpdName $printer]
