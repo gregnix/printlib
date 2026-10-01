@@ -3,7 +3,14 @@
 
 package require Tk
 encoding system utf-8
-tcl::tm::path add [file dirname [info script]]
+# Modulpfad auf lib/tm, nicht auf das eigene Verzeichnis.
+#
+# Neben dieser Datei liegt kein printlib-*.tm -- es steckt eine
+# Ebene tiefer. Ohne die Korrektur fand "package require printlib" das
+# Modul nur, wenn es ohnehin installiert war; aus einer ausgepackten
+# Kopie brach es mit "can't find package printlib" ab.
+# Gemessen 17.09.2026.
+::tcl::tm::path add [file join [file dirname [file normalize [info script]]] lib tm]
 package require printlib
 
 # =========================================================================
@@ -146,6 +153,25 @@ proc on_printer_change_do {} {
 
     set caps $caps_cache($printer)
     set isLabel [printlib::isLabelPrinter $printer]
+
+    # --- Schneiden: was kann dieser Treiber ueberhaupt? ---
+    #
+    # 01.10.2026: der Knopf stand immer auf allen vier Werten, egal was der
+    # Treiber anbietet. Wer "end" waehlt und einen Treiber hat, der nur
+    # ON/OFF kennt, bekommt keinen Schnitt und keine Nachricht. Jetzt steht
+    # im Log, wie die Option heisst, und bei einem Drucker ohne
+    # Schneide-Option ist das Feld aus.
+    global cut
+    if {[dict exists $caps cut_option]} {
+        log "Schneiden: [dict get $caps cut_option] = [dict get $caps cut_values]"
+        .main.opt.cc configure -state readonly
+    } elseif {$isLabel} {
+        log "Schneiden: der Treiber nennt keine Option -- printlib raet dann"
+        .main.opt.cc configure -state readonly
+    } else {
+        .main.opt.cc configure -state disabled
+        set cut auto
+    }
 
     # --- Kassetten-Combobox befuellen ---
     # Etikettendrucker haben keine Kassetten (Endlosrolle/Die-Cut von Rolle)
@@ -429,23 +455,29 @@ button .btns.brefr  -text "Caps neu" -width 10 -command {
     on_printer_change_do
     log "Caps neu geladen für: $printer"
 }
-button .btns.bdiag  -text "Diagnose" -width 10 -command {
-    global printer
-    log "--- Diagnose: $printer ---"
-
-    # twapi_printer laden
+# Diagnose
+#
+# 01.10.2026: der Knopf zeigte auf Linux drei leere Ueberschriften und
+# brach dann ab -- "can't read \"::env(TEMP)\": no such variable". Der
+# ganze Inhalt war Windows: twapi, PowerShell/WMI, recordarray. Auf
+# Linux gab es nichts davon, und was es GIBT (CUPS), stand nirgends.
+#
+# Eine Diagnose, die auf der Haelfte der Maschinen abstuerzt und auf der
+# anderen Haelfte leere Ueberschriften druckt, ist keine.
+proc diag_windows {printer} {
     catch { package require twapi_printer }
     log "--- twapi Befehle ---"
-    foreach c [lsort [concat \
+    set gefunden [lsort [concat \
         [info commands twapi::*print*] \
-        [info commands twapi::*printer*]]] {
-        log "  $c"
+        [info commands twapi::*printer*]]]
+    if {[llength $gefunden] == 0} {
+        log "  (keine -- twapi_printer nicht geladen)"
     }
+    foreach c $gefunden { log "  $c" }
 
-    # PowerShell WMI testen
     log "--- PowerShell Win32_PrinterConfiguration ---"
     set ::env(PRINTLIB_PRINTER) $printer
-    set ps1 [file join $::env(TEMP) printlib_caps.ps1]
+    set ps1 [file join [::printlib::tmpdir] printlib_caps.ps1]
     set fd [open $ps1 w]
     puts $fd {$name = $env:PRINTLIB_PRINTER}
     puts $fd {Get-WmiObject Win32_PrinterConfiguration |}
@@ -454,14 +486,12 @@ button .btns.bdiag  -text "Diagnose" -width 10 -command {
     puts $fd {  ConvertTo-Csv -NoTypeInformation}
     close $fd
     catch {
-        set out [exec powershell -NonInteractive             -ExecutionPolicy Bypass -File $ps1 2>@1]
-        foreach line [split $out \n] {
-            log "  [string trim $line]"
-        }
+        set out [exec powershell -NonInteractive \
+            -ExecutionPolicy Bypass -File $ps1 2>@1]
+        foreach line [split $out \n] { log "  [string trim $line]" }
     } ps_err
     if {$ps_err ne ""} { log "  PS Fehler: $ps_err" }
 
-    # recordarray fields + getlist testen
     log "--- recordarray fields/getlist ---"
     catch {
         set ra   [twapi::enumerate_printers]
@@ -476,7 +506,54 @@ button .btns.bdiag  -text "Diagnose" -width 10 -command {
         }
     } err2
     if {$err2 ne ""} { log "  Fehler: $err2" }
+}
 
+proc diag_unix {printer} {
+    log "--- lpstat ---"
+    if {[llength [auto_execok lpstat]] == 0} {
+        log "  lpstat nicht im PATH -- laeuft hier ein CUPS?"
+    } else {
+        catch {exec lpstat -p $printer -l 2>@1} out
+        foreach line [split [string trim $out] \n] { log "  [string trim $line]" }
+    }
+
+    log "--- lpoptions -l (was der Treiber anbietet) ---"
+    if {[llength [auto_execok lpoptions]] == 0} {
+        log "  lpoptions nicht im PATH"
+    } else {
+        catch {exec lpoptions -p $printer -l 2>@1} out
+        set n 0
+        foreach line [split [string trim $out] \n] {
+            if {[string trim $line] eq ""} continue
+            log "  [string trim $line]"
+            incr n
+        }
+        if {$n == 0} { log "  (nichts -- kennt CUPS diesen Drucker?)" }
+    }
+
+    log "--- was printlib daraus macht ---"
+    if {[catch {::printlib::printercaps $printer} caps]} {
+        log "  printercaps: $caps"
+    } else {
+        foreach k [lsort [dict keys $caps]] {
+            log "  [format %-14s $k] [dict get $caps $k]"
+        }
+    }
+}
+
+button .btns.bdiag  -text "Diagnose" -width 10 -command {
+    global printer
+    log "--- Diagnose: $printer ---"
+    log "  Plattform: $::tcl_platform(platform) / $::tcl_platform(os)"
+    log "  printlib [package provide printlib], Backend: [::printlib::detect]"
+    log "  Temp: [::printlib::tmpdir]"
+    if {$printer eq ""} {
+        log "  (kein Drucker gewaehlt -- nur die allgemeinen Angaben)"
+    } elseif {$::tcl_platform(platform) eq "windows"} {
+        diag_windows $printer
+    } else {
+        diag_unix $printer
+    }
     log "--- Ende Diagnose ---"
 }
 button .btns.bsave -text "Konfig speichern" -width 14 \
@@ -578,9 +655,10 @@ proc do_preview {} {
         return
     }
 
-    # Temp-Verzeichnis plattformübergreifend
-    set tmpdir [expr {[info exists ::env(TEMP)] ? $::env(TEMP) : "/tmp"}]
-    set tmp [file join $tmpdir printlib_preview]
+    # Temp-Verzeichnis: printlib::tmpdir sucht es und PRUEFT, ob sich dort
+    # wirklich schreiben laesst. Hier stand ein festes "/tmp" als Ausweg --
+    # das ist unter Windows kein Verzeichnis.
+    set tmp [file join [::printlib::tmpdir] printlib_preview]
 
     log "--- Vorschau ---"
     catch { exec pdftocairo -png -r 120 -singlefile $pdffile $tmp 2>@1 }

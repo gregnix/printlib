@@ -6,7 +6,32 @@
 #  on Linux. Only writing the reordered file needs pdfiumtcl, and that
 #  part is platform independent because no GDI is involved.
 #
-#  To be merged into printlib-0.2.tm.
+#  STATUS 17.09.2026: NOT part of printlib (still true in 0.3.1).
+#
+#  bookletOrder and makeBooklet are in neither the module nor any
+#  loaded file -- the module never sources this one. It lay under
+#  lib/tm/printlib/ and looked like shipped code; it is a draft.
+#
+#  Moved to doc/ next to printlib-pdfium-backend.tcl, which is the same
+#  kind of thing: a patch waiting to be merged, not a library file.
+#
+#  FRIST: Maerz 2027 (gesetzt 17.09.2026, siehe doc/roadmap.md R3a).
+#
+#  Wird bis dahin kein Booklet gebraucht, ersatzlos streichen: diese
+#  Datei, die acht bookletOrder-Faelle in test-pdfium-backend.tcl,
+#  inv-booklet-1.0/1.1 und R3a.
+#
+#  Damit ist es keine offene Frage mehr, sondern eine terminierte.
+#
+#  To merge: append both procs to the current printlib-*.tm (the then
+#  current module), add a -booklet branch in print, and keep the eight
+#  cases --
+#  they are the real asset. bookletOrder is where booklet printing goes
+#  wrong; rewriting it later would mean rewriting them too.
+#
+#  Beim Einbauen gehoert das harte Backend-Gatter dazu: pdftocairo und
+#  sumatra koennen kein n-up, also muss -booklet dort ABBRECHEN statt
+#  still einseitig zu drucken.
 # ==========================================================================
 
 

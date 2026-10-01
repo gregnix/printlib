@@ -1,6 +1,12 @@
 # ==========================================================================
 #  printlib-pdfium-backend.tcl  --  patch for printlib-0.2.tm
 #
+#  STATUS 17.09.2026: MERGED. All five places listed below are in
+#  printlib-0.3.tm (seit 0.3.1: printlib-0.3.1.tm) -- pdfiumPrefer (4x),
+#  -pdfiumprefer, _available,
+#  detect, and the pdfium branch in print. Kept as the record of what
+#  was changed and why; it is no longer a pending patch.
+#
 #  Adds the "pdfium" backend: native Windows printing through pdfiumtcl
 #  (GDI/DEVMODE), without any external program on PATH.
 #

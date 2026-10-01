@@ -1,4 +1,4 @@
-# printlib 0.3
+# printlib 0.3.1
 
 Cross-platform PDF printing library for Tcl/Tk.
 
@@ -12,7 +12,7 @@ Put the Tcl module, named by the `name-version.tm` convention, on a tm path:
 
 ```bash
 mkdir -p ~/.local/lib/tcl8/site-tcl
-cp lib/tm/printlib-0.3.tm ~/.local/lib/tcl8/site-tcl/
+cp lib/tm/printlib-0.3.1.tm ~/.local/lib/tcl8/site-tcl/
 ```
 
 Or leave it in place and add the path to Tcl:
@@ -76,11 +76,19 @@ set printer [printlib::resolvePrinter "QL-820NWB"]
 # Print with the correct label settings
 printlib::print /tmp/label.pdf \
     -printer     $printer \
-    -paper       [printlib::labelpaper "DK-22205"]  ;# -> "DK22205"
+    -paper       [printlib::labelpaper "DK-22205"] \
     -scale       origsize \
     -orientation portrait \
     -cut         auto
 ```
+
+`labelpaper` liefert den Namen, den der Treiber erwartet -- aus
+`DK-22205` wird `DK22205`.
+
+Das `;#` stand bis 17.09.2026 hinter der `-paper`-Zeile, **ohne**
+Fortsetzungsstrich. Gemessen: `print` bekam vier statt zehn Optionen,
+danach brach es mit `invalid command name "-scale"` ab. Ein Kommentar
+in einer fortgesetzten Argumentliste beendet den Aufruf.
 
 ### Default configuration per printer (PPD files)
 
@@ -116,8 +124,10 @@ Search order for PPD files:
 | Function | Purpose |
 |----------|---------|
 | `configure ?-opt val ...?` | set global default options |
-| `print pdf ?-opt val ...?` | print |
+| `print pdf ?-opt val ...?` | print -- returns `""`, **throws** on failure |
+| `command pdf ?-opt val ...?` | build the command line and return it, **without printing** |
 | `detect` | determine / check the active backend |
+| `tmpdir` | a directory for work files, proven writable |
 | `status` | module status + backend availability |
 
 ### Printer information
@@ -207,9 +217,50 @@ In `ppd/`:
 - `Brother_QL-820NWB.pdftocairo` -- QL label printer (Linux/lp)
 - `Brother_QL-820NWB.sumatra` -- QL label printer (Windows/sumatra)
 
+### Errors
+
+`print` returns `""` and **throws** when the job failed -- there is no
+error return value:
+
+```tcl
+if {[catch {printlib::print $file -printer $p} err]} { ... }
+```
+
+What counts as a failure is decided by the backend's exit code, not by the
+text of its output: a program that only writes to stderr and exits 0 has
+printed. Font warnings from pdftocairo are the everyday case.
+
+`-silent` is a wish, not a promise -- the effect differs per backend
+(`-q` for pdftocairo, `-silent` for SumatraPDF, nothing for lp and
+pdfium).
+
+### Checking the options without printing
+
+`command` builds exactly the line `print` would execute and hands it back.
+Paper is the one output that cannot be rolled back, so the option build --
+above all the input tray -- deserves a test that costs no sheet:
+
+```tcl
+printlib::command bogen.pdf -backend lp -printer kluniversal -source manual
+# -> lp -d kluniversal -o InputSlot=Manual -o CutLabel=ON -o AutoCut=ON bogen.pdf
+```
+
+Two deliberate differences from `print`: `command` does not require the
+backend to be available on this machine (otherwise the Windows line could
+not be tested on Linux, which is where the suite runs), and it does not
+require the file to exist. `pdfium` has no command line -- it prints via
+GDI/DEVMODE in-process -- and `command` says so instead of inventing one.
+
 ## Versions
 
-- **0.3** (current): pdfium backend, backend registry, runs under Tcl 9,
+- **0.3.1** (current): `command`; `_available` obeys the platform registry
+  on the explicit path too; PPD autoload no longer breaks `print` with
+  pdfium + printer name; a failed print no longer reports success
+  (exit code instead of text matching); `print`'s documented return
+  contract corrected; error messages in one language; `tmpdir` instead of
+  `env(TEMP)` (which threw on Linux); the diagnostics button works on both
+  platforms; the demo no longer duplicates the GUI
+- **0.3**: pdfium backend, backend registry, runs under Tcl 9,
   the two 0.2 lines merged into one module
 - **0.2**: PPD format, lp backend, label API, orientation/cut,
   resolvePrinter, expanded GUI
@@ -226,4 +277,20 @@ capabilities API, completing the backend registry -- are in
 
 ## License
 
-MIT -- see [LICENSE](LICENSE).
+**BSD 2-Clause** -- see [LICENSE](LICENSE). The module header says the
+same; decided 17.09.2026, after the three places had disagreed (header
+BSD, this line MIT, no `LICENSE` file at all).
+
+BSD 2-Clause fits the neighbourhood: Tcl itself, pdf4tcl and tcllib are
+all under BSD-style licences, so anyone shipping printlib beside them
+has one licence family rather than two.
+
+### Third-party parts
+
+`pdftocairo`, `lp` and SumatraPDF are called as **external programs** --
+printlib does not link them, and their licences do not reach into code
+that uses printlib.
+
+`pdfiumtcl` is different: it is loaded into the process, and PDFium's
+own licence (BSD-style) applies to it. Anyone redistributing printlib
+together with pdfiumtcl should ship that licence too.

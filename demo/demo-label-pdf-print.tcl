@@ -13,7 +13,16 @@
 #   tclsh demo-label-pdf-print.tcl "Brother QL-810W" DK-22205 \
 #         "Karl Mustermann\nHauptstr 1\n12345 Berlin"
 
-package require printlib    ;# 0.2 oder neuer
+# Modulpfad auf den Baum, in dem diese Datei liegt.
+#
+# Ohne das bricht die Demo mit "can't find package printlib" ab, sobald
+# printlib nicht installiert ist -- also genau nach dem Auspacken des
+# Archivs. Die Testdateien machen es seit jeher selbst; die Demos nicht.
+# Gemessen 17.09.2026.
+::tcl::tm::path add [file join [file dirname [file dirname \
+        [file normalize [info script]]]] lib tm]
+
+package require printlib
 package require pdf4tcl     ;# fuer PDF-Erstellung
 
 # -------------------------------------------------------------------------

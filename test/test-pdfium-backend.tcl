@@ -18,17 +18,33 @@ namespace import ::tcltest::*
 set here [file dirname [file normalize [info script]]]
 
 # load printlib (source the .tm directly -- no module path needed)
+# Die Kandidaten nicht festschreiben: hier standen bis 0.3 die Namen
+# printlib-0.3.tm / printlib-0.2.tm, und bei jedem Versionssprung waere
+# die Liste stillschweigend veraltet. Gesucht wird jetzt nach Muster, die
+# hoechste Fassung gewinnt.
 set _mod ""
-foreach _c [list \
-        [file join $here .. lib tm printlib-0.3.tm] \
-        [file join $here printlib-0.3.tm] \
-        [file join $here printlib-0.2.tm]] {
+set _kand [lsort -decreasing -dictionary [concat \
+    [glob -nocomplain [file join $here .. lib tm printlib-*.tm]] \
+    [glob -nocomplain [file join $here printlib-*.tm]]]]
+foreach _c $_kand {
     if {[file exists $_c]} { set _mod $_c ; break }
 }
 if {$_mod eq "" || [catch {source $_mod} e]} {
     puts stderr "printlib module not found: $e"
     exit 1
 }
+
+# WELCHE Datei wurde geladen?
+#
+# Ein gruener Lauf ohne diese Zeile sagt nur: irgendein printlib
+# funktioniert. Die Kandidatenliste oben nimmt die erste Datei, die es
+# gibt -- liegt eine fremde oder alte daneben, faellt das nicht auf.
+#
+# Gemessen 17.09.2026: ein Paket kam mit 13 pdf4tcl-Dateien ausgeliefert,
+# darunter ein pkgIndex.tcl, das "pdf4tcl 0.9.4.52" anmeldete und auf
+# eine Datei zeigte, die gar nicht dabei war. Solche Beimischungen
+# sieht man nur, wenn der Pfad dasteht.
+puts stdout "printlib [package provide printlib] aus: $_mod"
 
 # --------------------------------------------------------------------------
 #  Mock: ::pdfium::papers
@@ -203,6 +219,21 @@ proc ::printlib::_pdfiumFormForLabel {printer paper pdffile} {
 }
 
 
+# ACHTUNG: die folgende Prozedur ist eine KOPIE aus doc/printlib-booklet.tcl.
+#
+# bookletOrder ist NICHT Teil von printlib 0.3 -- das Modul sourct den
+# Entwurf nie. Nach "package require printlib" ist
+# ::printlib::bookletOrder leer; gemessen 17.09.2026.
+#
+# Die acht Faelle unten pruefen also den ENTWURF, nicht das ausgelieferte
+# Paket. Sie sind trotzdem sinnvoll: bookletOrder ist reine Rechnung auf
+# der Seitenliste, und test-pdfium-backend-guard.tcl vergleicht diese
+# Kopie zeichenweise gegen doc/printlib-booklet.tcl -- sie kann also
+# nicht davonlaufen.
+#
+# Wird der Entwurf eingebaut (Roadmap R3a), gehoert diese Definition
+# geloescht: dann liefert das Modul sie, und die Faelle pruefen das
+# Paket statt einer Kopie.
 proc ::printlib::bookletOrder {n} {
     if {![string is integer -strict $n] || $n < 1} {
         error "printlib::bookletOrder: page count must be >= 1"

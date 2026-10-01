@@ -1,10 +1,26 @@
-# printlib-0.3.tm
+# printlib-0.3.1.tm
 #
 # Plattformuebergreifende PDF-Druckbibliothek fuer Tcl/Tk
 # Unterstuetzt: pdftocairo (Vektor), SumatraPDF (Bitmap-Fallback)
 #
 # Copyright (C) 2026 gregnix
 # Lizenz: BSD 2-Clause
+#
+# Changelog 0.3.1:
+#   - _available fragt die Plattform-Registry. Bis 0.3 tat das nur detect
+#     ueber _backendsFor, also nur der auto-Weg; wer "-backend pdftocairo"
+#     ausdruecklich nannte, bekam es unter Linux auch -- obwohl dort die
+#     Option -print fehlt (die gibt es nur im Windows-Build von poppler).
+#   - PPD-Autoload nur fuer Backends, die ein PPD-Format haben. pdfium hat
+#     keines; print scheiterte mit pdfium UND Druckername an findPpdFile,
+#     bevor gedruckt wurde -- und das ist der Hauptweg dieses Backends.
+#   - command NEU: baut die Kommandozeile und gibt sie zurueck, ohne zu
+#     drucken. Damit ist der Optionsbau -- vor allem die Zufuhr -- pruefbar,
+#     ohne dass Papier faellt. Uebernommen aus dem Etikettendruck-Zweig,
+#     dort aber mit eigener Optionsliste; hier teilen sich print und
+#     command _parseOpts, den PPD-Autoload und die _cmd_*-Prozeduren.
+#   - _print_pdftocairo / _print_sumatra / _print_lp in "Zeile bauen"
+#     (_cmd_*) und "Zeile ausfuehren" getrennt.
 #
 # Changelog 0.2:
 #   - Eigene Konfigurationsformate .pdftocairo und .sumatra
@@ -31,7 +47,7 @@
 #   - redundantes variable-Statement entfernt
 #   - PowerShell-Ausgabe-Parsing: Style-Fixes
 
-package provide printlib 0.3
+package provide printlib 0.3.1
 package require Tcl 8.6-
 
 namespace eval ::printlib {
@@ -58,6 +74,13 @@ namespace eval ::printlib {
     ]
 
     # Ermittelter Backend nach detect
+    # Gemerktes Temp-Verzeichnis (siehe tmpdir).
+    variable tmpdirGemerkt ""
+
+    # Schneide-Option je Drucker (siehe _cutCaps).
+    variable cutCapsCache
+    array set cutCapsCache {}
+
     variable activeBackend ""
 
     # --- Backend-Registry ------------------------------------------------
@@ -83,11 +106,12 @@ namespace eval ::printlib {
         return [dict keys $backends]
     }
 
-    namespace export configure print printerlist defaultprinter \
+    namespace export configure print command printerlist defaultprinter \
         printerinfo printercaps printercaps_all detect status \
         loadPpdFile savePpdFile findPpdFile \
         isLabelPrinter labelformats labelsize labelpaper \
         resolvePrinter exportPrinterConfig importPrinterConfig \
+        known tmpdir \
         savePrinterProfile usePrinterProfile listPrinterProfiles \
         openPrinterSettings
 }
@@ -110,7 +134,15 @@ namespace eval ::printlib {
 #   -copies     Anzahl Kopien
 #               SumatraPDF / lp: nativ
 #               pdftocairo: Workaround -- Druck wird N-mal ausgefuehrt
-#   -silent     0 | 1   Fehlerdialog unterdruecken (beide Backends)
+#   -silent     0 | 1   Ausgaben des Backends unterdruecken.
+#               Der Kommentar sagte bis zum 30.09.2026 "beide Backends" --
+#               es sind vier, und die Wirkung ist NICHT dieselbe:
+#                 pdftocairo: -q        (keine Meldungen auf stderr)
+#                 sumatra:    -silent   (kein Fehlerdialog)
+#                 lp:         ohne Wirkung -- lp gibt nur eine Job-ID aus
+#                 pdfium:     ohne Wirkung -- druckt ueber GDI, ohne Dialog
+#               Eine Vereinheitlichung waere eine API-Aenderung und steht
+#               aus; bis dahin gilt: -silent ist ein Wunsch, keine Zusage.
 #   -orientation portrait | landscape | reverse-landscape | reverse-portrait
 #               Druckorientierung. Wirkung pro Backend:
 #                 lp:         -o orientation-requested=4 (CUPS-Standard)
@@ -137,6 +169,22 @@ proc ::printlib::configure {args} {
     if {[llength $args] == 0} {
         return $cfg
     }
+
+    # PAARWACHE.
+    #
+    # foreach {opt val} nimmt eine ungerade Liste stillschweigend an und
+    # setzt den letzten Wert auf leer. Gemessen 17.09.2026:
+    #
+    #   configure -printer HP -silent
+    #     -> rc 0, printer HP, silent ''
+    #
+    # Der Aufrufer wollte -silent 1 und bekam das Gegenteil, ohne
+    # Meldung. Bei einem Drucker faellt das erst am Papier auf.
+    if {[llength $args] % 2} {
+        error "printlib::configure: Optionen muessen Paare sein --\
+                [llength $args] Argumente, letztes: [lindex $args end]"
+    }
+
     foreach {opt val} $args {
         switch -- $opt {
             -backend     { dict set cfg backend   $val }
@@ -165,7 +213,11 @@ proc ::printlib::configure {args} {
 # -------------------------------------------------------------------------
 # detect -- Backend erkennen und testen
 #
-# Gibt zurueck: pdftocairo | sumatra | none
+# Gibt zurueck: pdftocairo | pdfium | sumatra | lp | none
+#
+# Der Satz nannte bis 17.09.2026 nur pdftocairo und sumatra -- das war
+# der Stand von 0.2. Seither kennt die Registry vier Backends; welche
+# davon in Frage kommen, sagt [known].
 # Setzt activeBackend.
 # -------------------------------------------------------------------------
 proc ::printlib::detect {} {
@@ -239,25 +291,209 @@ proc ::printlib::_ppdBackends {} {
 #
 # Optionen wie bei configure (-printer -source -duplex -paper -copies)
 # plus:
-#   -backend  pdftocairo | sumatra   (einmalige Auswahl)
+#   -backend  auto | pdftocairo | pdfium | sumatra | lp
+#             (einmalige Auswahl; bis 0.2 waren es nur zwei)
 #   -pages    first-last             (Seitenbereich, z.B. "1-3")
-#   -silent   1 | 0                  (Fehlermeldungen unterdruecken)
+#   -silent   1 | 0                  (siehe configure -- Wirkung je Backend)
 #
-# Gibt "" zurueck bei Erfolg, Fehlermeldung bei Fehler.
+# RUECKGABE UND FEHLER
+#
+# Bei Erfolg "" -- der Rueckgabewert traegt keine Auskunft.
+#
+# Bei einem Fehler WIRFT print (error), es gibt keinen Fehlerwert zurueck.
+# Hier stand bis zum 30.09.2026 "Gibt \"\" zurueck bei Erfolg,
+# Fehlermeldung bei Fehler". Das liest sich wie ein Rueckgabewert, und wer
+# es so verstand, prueft auf eine leere Zeichenkette und bemerkt einen
+# fehlgeschlagenen Druck nie. Richtig ist:
+#
+#   if {[catch {printlib::print $datei -printer $p} fehler]} { ... }
+#
+# Was "Fehler" heisst, entscheidet der Exit-Code des Backends, nicht der
+# Text (siehe _execFehler): ein Programm, das nur auf stderr schreibt und
+# mit 0 endet, hat gedruckt.
 # -------------------------------------------------------------------------
-proc ::printlib::print {pdffile args} {
+# -------------------------------------------------------------------------
+# _cutLpOpts -- aus dem Wunsch ("auto", "on", "off", "end") die -o Eintraege
+# machen, die DIESER Treiber versteht.
+#
+# Tk-frei, ohne exec: der Aufrufer reicht Name und Werteliste herein, die
+# printercaps aus "lpoptions -l" gelesen hat. Damit ist die Abbildung
+# pruefbar, ohne dass ein Drucker in der Naehe sein muss.
+#
+# Hier stand bis zum 01.10.2026 eine Liste geratener Namen:
+#
+#   CutLabel=ON  AutoCut=ON  CutAtEnd=ON
+#
+# mit dem Kommentar "der Treiber waehlt den passenden, unbekannte werden
+# ignoriert". Das ist keine Strategie, sondern eine Hoffnung -- und der
+# Brother QL-820NWB nennt seine Option CutMedia mit den Werten None, Auto,
+# EndOfPage und EndOfJob. Keiner der drei Namen traf, CUPS uebergab nichts,
+# und das Etikett blieb an der Rolle.
+#
+# Kennt der Treiber gar keine Schneide-Option (jeder normale Bueordrucker),
+# kommt nichts heraus -- das ist richtig so.
+# -------------------------------------------------------------------------
+proc ::printlib::_cutLpOpts {cutMode optName optValues} {
+    # Ohne Auskunft vom Treiber bleibt nur das alte Raten. Das ist
+    # schlechter als Lesen, aber besser als gar nichts -- und es trifft
+    # die Treiber, fuer die es frueher gedacht war.
+    if {$optName eq "" || [llength $optValues] == 0} {
+        switch -- $cutMode {
+            on - always      { return {CutLabel=ON AutoCut=ON} }
+            auto             { return {CutLabel=ON AutoCut=ON} }
+            off - none - never { return {CutLabel=OFF AutoCut=OFF} }
+            end              { return {CutAtEnd=ON} }
+            default          { return {} }
+        }
+    }
+
+    # Mit Auskunft: den ersten Wert nehmen, den der Treiber wirklich hat.
+    # Reihenfolge = Vorliebe, nicht Alphabet.
+    switch -- $cutMode {
+        on - always      { set wunsch {EndOfPage Auto ON On True Yes Enabled} }
+        auto             { set wunsch {Auto EndOfPage ON On True Yes Enabled} }
+        end              { set wunsch {EndOfJob EndOfPage Auto} }
+        off - none - never { set wunsch {None OFF Off False No Disabled} }
+        default          { return {} }
+    }
+    foreach w $wunsch {
+        foreach v $optValues {
+            if {[string equal -nocase $w $v]} { return [list "$optName=$v"] }
+        }
+    }
+    # Der Treiber kennt die Option, aber keinen passenden Wert. Einen
+    # erfinden hiesse, wieder ins Leere zu schicken.
+    return {}
+}
+
+# Die Schneide-Auskunft zu einem Drucker, einmal je Lauf geholt.
+# printercaps kostet ein exec; die Antwort aendert sich waehrend eines
+# Laufs nicht.
+proc ::printlib::_cutCaps {printer} {
+    variable cutCapsCache
+    if {$printer eq ""} { return {"" {}} }
+    if {[info exists cutCapsCache($printer)]} { return $cutCapsCache($printer) }
+    set antwort [list "" {}]
+    catch {
+        set caps [printercaps $printer]
+        if {[dict exists $caps cut_option]} {
+            set antwort [list [dict get $caps cut_option] [dict get $caps cut_values]]
+        }
+    }
+    set cutCapsCache($printer) $antwort
+    return $antwort
+}
+
+# -------------------------------------------------------------------------
+# tmpdir -- ein beschreibbares Verzeichnis fuer Arbeitsdateien
+#
+# 01.10.2026: an drei Stellen stand "file join $::env(TEMP) ...". TEMP
+# setzt Windows; unter Linux gibt es die Variable nicht, und der Zugriff
+# auf ein fehlendes Element von ::env wirft:
+#
+#   can't read "::env(TEMP)": no such variable
+#     (read trace on "::env(TEMP)")
+#
+# Gemeldet aus der GUI auf Debian: der Knopf "Diagnose" brach damit ab.
+#
+# Beschreibbar heisst: eine Datei laesst sich dort WIRKLICH anlegen.
+# "file writable" luegt unter Windows (ACLs, kontrollierter
+# Ordnerzugriff) -- der einzige verlaessliche Test ist der Versuch.
+#
+# Das Ergebnis wird gemerkt: der Versuch kostet einen Dateizugriff, und
+# das Verzeichnis wechselt innerhalb eines Laufs nicht.
+# -------------------------------------------------------------------------
+proc ::printlib::tmpdir {} {
+    variable tmpdirGemerkt
+    if {$tmpdirGemerkt ne ""} { return $tmpdirGemerkt }
+
+    set kandidaten {}
+    if {$::tcl_platform(platform) eq "windows"} {
+        foreach v {TEMP TMP TMPDIR} {
+            if {[info exists ::env($v)] && $::env($v) ne ""} {
+                lappend kandidaten $::env($v)
+            }
+        }
+        lappend kandidaten C:/Windows/Temp
+    } else {
+        foreach v {TMPDIR TEMP TMP} {
+            if {[info exists ::env($v)] && $::env($v) ne ""} {
+                lappend kandidaten $::env($v)
+            }
+        }
+        lappend kandidaten /tmp /var/tmp
+    }
+    lappend kandidaten [pwd]
+
+    foreach d $kandidaten {
+        if {![file isdirectory $d]} continue
+        set probe [file join $d printlib-probe-[pid]-[clock clicks]]
+        if {[catch {open $probe w} fh]} continue
+        close $fh
+        catch {file delete -- $probe}
+        set tmpdirGemerkt $d
+        return $d
+    }
+    error "printlib::tmpdir: kein beschreibbares Temp-Verzeichnis gefunden\
+            (versucht: [join $kandidaten {, }])"
+}
+
+# -------------------------------------------------------------------------
+# _execFehler -- hat exec wirklich versagt, oder hat das Programm nur
+# auf stderr geredet?
+#
+# Tcl wirft bei exec in drei ganz verschiedenen Faellen, und -errorcode
+# sagt, in welchem:
+#
+#   NONE              das Programm lief und endete mit 0, hat aber auf
+#                     stderr geschrieben (pdftocairo: "Syntax Warning:
+#                     Invalid Font Weight" und aehnliches)
+#   CHILDSTATUS p n   das Programm lief und endete mit n != 0
+#   CHILDKILLED ...   ein Signal hat es beendet
+#   POSIX ...         es liess sich gar nicht erst starten
+#
+# Nur NONE ist harmlos.
+#
+# 30.09.2026: hier stand bei pdftocairo ein Mustervergleich auf den
+# Fehlertext -- abgebrochen wurde nur bei "*child process exited
+# abnormally*" oder "*Error:*". Gemessen mit vorgetaeuschtem exec:
+#
+#   Exit 1, Text "I/O setup failed: cannot open printer port"
+#     -> print gab "" zurueck, also ERFOLG. Gedruckt wurde nichts.
+#
+# Ein Druck, der nicht stattgefunden hat und Erfolg meldet, ist schlimmer
+# als einer, der laut scheitert: niemand sieht nach dem Papier.
+#
+# Bei lp und SumatraPDF stand das Gegenteil -- jedes catch galt als
+# Fehler, auch eine blosse Meldung auf stderr bei Exit 0. Beide Faelle
+# gehen jetzt durch dieselbe Frage.
+# -------------------------------------------------------------------------
+proc ::printlib::_execFehler {opt} {
+    if {![dict exists $opt -errorcode]} { return 1 }
+    return [expr {[lindex [dict get $opt -errorcode] 0] ne "NONE"}]
+}
+
+# -------------------------------------------------------------------------
+# _parseOpts -- die Aufrufoptionen ueber die configure-Vorgaben legen
+#
+# Seit 0.3.1 teilen sich print und command diese Prozedur. Vorher gab es
+# die Liste nur in print; command (aus dem Etikettendruck-Zweig) trug eine
+# zweite Kopie. Zwei Kopien derselben Optionsliste laufen auseinander, und
+# dann baut command eine Zeile, die so gar nicht gedruckt wuerde -- ein
+# Pruefwerkzeug, das das Falsche prueft, ist schlimmer als keines.
+#
+# wer        Name fuer die Fehlermeldung ("print" oder "command")
+# args       die Optionsliste des Aufrufers
+# keysVar    Name einer Variablen, in die die AUSDRUECKLICH gesetzten
+#            Schluessel kommen -- der PPD-Autoload braucht sie, weil
+#            Datei-Werte configure-Vorgaben schlagen duerfen, aber keine
+#            ausdrueckliche Angabe im Aufruf.
+# -------------------------------------------------------------------------
+proc ::printlib::_parseOpts {wer args_ keysVar} {
     variable cfg
-    variable activeBackend
+    upvar 1 $keysVar cliKeys
+    set cliKeys {}
 
-    # Datei pruefen
-    if {![file exists $pdffile]} {
-        error "printlib::print: Datei nicht gefunden: $pdffile"
-    }
-    if {[string tolower [file extension $pdffile]] ne ".pdf"} {
-        error "printlib::print: Keine PDF-Datei: $pdffile"
-    }
-
-    # Temporaere Optionen parsen (ueberschreiben cfg fuer diesen Aufruf)
     set local [dict create \
         backend     [dict get $cfg backend] \
         printer     [dict get $cfg printer] \
@@ -273,28 +509,35 @@ proc ::printlib::print {pdffile args} {
         paperh      [dict get $cfg paperh] \
         pages       "" \
     ]
-    # Tracking: welche Optionen wurden im print-Aufruf explizit gesetzt?
-    # (relevant fuer 0.2 PPD-Autoload: explizite Optionen haben Vorrang
-    # vor Datei-Werten, configure-Defaults nicht.)
-    set cliKeys {}
-    foreach {opt val} $args {
-        switch -- $opt {
-            -backend     { dict set local backend     $val; lappend cliKeys backend }
-            -printer     { dict set local printer     $val; lappend cliKeys printer }
-            -source      { dict set local source      $val; lappend cliKeys source }
-            -duplex      { dict set local duplex      $val; lappend cliKeys duplex }
-            -paper       { dict set local paper       $val; lappend cliKeys paper }
-            -scale       { dict set local scale       $val; lappend cliKeys scale }
-            -copies      { dict set local copies      $val; lappend cliKeys copies }
-            -pages       { dict set local pages       $val; lappend cliKeys pages }
-            -silent      { dict set local silent      $val; lappend cliKeys silent }
-            -orientation { dict set local orientation $val; lappend cliKeys orientation }
-            -cut         { dict set local cut         $val; lappend cliKeys cut }
-            -paperw      { dict set local paperw      $val; lappend cliKeys paperw }
-            -paperh      { dict set local paperh      $val; lappend cliKeys paperh }
-            default      { error "printlib::print: unbekannte Option: $opt" }
-        }
+    if {[llength $args_] % 2} {
+        error "printlib::$wer: ungerade Optionsliste -- zu jedem Schluessel\
+                gehoert ein Wert"
     }
+    foreach {opt val} $args_ {
+        set k [string range $opt 1 end]
+        if {[string index $opt 0] ne "-" || ![dict exists $local $k]} {
+            error "printlib::$wer: unbekannte Option: $opt"
+        }
+        dict set local $k $val
+        lappend cliKeys $k
+    }
+    return $local
+}
+
+proc ::printlib::print {pdffile args} {
+    variable cfg
+    variable activeBackend
+
+    # Datei pruefen
+    if {![file exists $pdffile]} {
+        error "printlib::print: Datei nicht gefunden: $pdffile"
+    }
+    if {[string tolower [file extension $pdffile]] ne ".pdf"} {
+        error "printlib::print: Keine PDF-Datei: $pdffile"
+    }
+
+    # Temporaere Optionen parsen (ueberschreiben cfg fuer diesen Aufruf)
+    set local [_parseOpts print $args cliKeys]
 
     # Backend bestimmen
     set be [dict get $local backend]
@@ -321,9 +564,26 @@ proc ::printlib::print {pdffile args} {
     # uebernehmen -- aber nur fuer Optionen, die im print-Aufruf NICHT
     # explizit gesetzt wurden.
     # lp nutzt das gleiche PPD-Format wie pdftocairo (Linux-Konvention).
+    #
+    # 30.09.2026: hier stand nur "if {$printer ne \"\"}". Nicht jedes
+    # Backend hat ein PPD-Format -- pdfium hat keines, und findPpdFile
+    # wirft fuer einen Namen, der nicht in _ppdBackends steht. Damit
+    # scheiterte
+    #
+    #     print datei.pdf -backend pdfium -printer "Brother QL-820NWB"
+    #
+    # mit "printlib::findPpdFile: ungueltiges Backend 'pdfium'" -- BEVOR
+    # ueberhaupt gedruckt wurde. Und das ist der Hauptweg dieses Backends:
+    # pdfium ist der Etikettendruckweg unter Windows, und ein Druckername
+    # gehoert dazu. Ohne -printer lief es, mit -printer nie.
+    #
+    # Aufgefallen beim Einbau von command, das denselben Autoload macht.
+    # Die Testreihe sah es nicht, weil _print_pdfium ohne tclpdfium gar
+    # nicht erreicht wird -- geprueft wird das jetzt mit einem
+    # vorgetaeuschten _available (inv-ppd-2.0).
     set printer [dict get $local printer]
-    if {$printer ne ""} {
-        set ppdBackend [expr {$be eq "lp" ? "pdftocairo" : $be}]
+    set ppdBackend [expr {$be eq "lp" ? "pdftocairo" : $be}]
+    if {$printer ne "" && $ppdBackend in [_ppdBackends]} {
         set ppdPath [findPpdFile $printer $ppdBackend]
         if {$ppdPath ne ""} {
             _applyPpdToOpts local [loadPpdFile $ppdPath] $cliKeys
@@ -341,6 +601,74 @@ proc ::printlib::print {pdffile args} {
         return [_print_pdfium $pdffile $local]
     } else {
         error "printlib::print: unbekanntes Backend: $be"
+    }
+}
+
+# -------------------------------------------------------------------------
+# command -- die Kommandozeile bauen und ZURUECKGEBEN, ohne zu drucken
+#
+#   printlib::command bogen.pdf -backend lp -printer kluniversal -source manual
+#   -> lp -d kluniversal -o InputSlot=Manual bogen.pdf
+#
+# Wofuer das da ist: der Optionsbau -- vor allem die Zufuhr -- ist sonst
+# nur auf Papier pruefbar. Ein Etikettenbogen, der aus der falschen
+# Kassette kommt, faellt erst auf, wenn er gedruckt ist, und Papier laesst
+# sich nicht zurueckrollen. Mit command laeuft derselbe Bau durch einen
+# Test, ohne dass ein Drucker in der Naehe sein muss.
+#
+# Gleicher Weg wie print: dieselben Optionen (_parseOpts), derselbe
+# PPD-Autoload, dieselben _cmd_*-Prozeduren. Was hier herauskommt, ist das,
+# was print ausfuehren wuerde -- einschliesslich der Tcl-Umleitung "2>@1"
+# bei pdftocairo, die zur ausgefuehrten Zeile gehoert.
+#
+# ZWEI UNTERSCHIEDE ZU print, beide absichtlich:
+#
+#   1. command prueft NICHT, ob das Backend auf dieser Maschine verfuegbar
+#      ist. Sonst liesse sich die Windows-Zeile nicht unter Linux testen --
+#      und genau dort laeuft die Testreihe.
+#   2. "auto" wird ueber detect aufgeloest; ist nichts verfuegbar, ist das
+#      ein Fehler. Eine Zeile "none ... datei.pdf" waere eine Luege.
+#
+# pdfium hat keine Kommandozeile: es druckt ueber GDI/DEVMODE im Prozess.
+# Dafuer wirft command -- lieber ein klarer Fehler als eine erfundene Zeile.
+# -------------------------------------------------------------------------
+proc ::printlib::command {pdffile args} {
+    variable activeBackend
+
+    set local [_parseOpts command $args cliKeys]
+
+    set be [dict get $local backend]
+    if {$be eq "auto"} {
+        detect
+        set be $activeBackend
+        if {$be eq "none"} {
+            error "printlib::command: kein Druckbackend verfuegbar --\
+                    mit -backend eines von [join [known] {, }] nennen"
+        }
+    } elseif {$be ni [known]} {
+        error "printlib::command: unbekanntes Backend: $be"
+    }
+
+    if {$be eq "pdfium"} {
+        error "printlib::command: pdfium hat keine Kommandozeile --\
+                es druckt ueber GDI/DEVMODE im Prozess"
+    }
+
+    # PPD-Autoload wie in print, damit die Zeile dieselbe ist.
+    set printer [dict get $local printer]
+    set ppdBackend [expr {$be eq "lp" ? "pdftocairo" : $be}]
+    if {$printer ne "" && $ppdBackend in [_ppdBackends]} {
+        set ppdPath [findPpdFile $printer $ppdBackend]
+        if {$ppdPath ne ""} {
+            _applyPpdToOpts local [loadPpdFile $ppdPath] $cliKeys
+        }
+    }
+
+    switch -- $be {
+        pdftocairo { return [_cmd_pdftocairo $pdffile $local] }
+        sumatra    { return [_cmd_sumatra    $pdffile $local] }
+        lp         { return [_cmd_lp         $pdffile $local] }
+        default    { error "printlib::command: unbekanntes Backend: $be" }
     }
 }
 
@@ -379,7 +707,7 @@ proc ::printlib::_pdfPageSize {pdffile} {
 # -------------------------------------------------------------------------
 # _print_pdftocairo -- Drucken via pdftocairo (Vektor, Cairo Win32)
 # -------------------------------------------------------------------------
-proc ::printlib::_print_pdftocairo {pdffile opts} {
+proc ::printlib::_cmd_pdftocairo {pdffile opts} {
     variable cfg
 
     set exe [dict get $cfg pdftocairo]
@@ -468,8 +796,26 @@ proc ::printlib::_print_pdftocairo {pdffile opts} {
     if {$pages ne ""} {
         if {[regexp {^(\d+)-(\d+)$} $pages -> f l]} {
             lappend cmd -f $f -l $l
-        } elseif {[string is integer $pages]} {
+        } elseif {[string is integer -strict $pages]} {
             lappend cmd -f $pages -l $pages
+        } else {
+            # LAUT SCHEITERN, nicht still alles drucken.
+            #
+            # pdftocairo kennt nur -f/-l, also einen zusammenhaengenden
+            # Bereich. odd, even und Listen wie "1,3,5" fielen bis
+            # 17.09.2026 durch beide Zweige -- ohne -f/-l druckt
+            # pdftocairo das GANZE Dokument.
+            #
+            # Wer "-pages odd" angibt und einen Volljob bekommt, merkt
+            # es am Papier. Papier ist die einzige Ausgabe hier, die man
+            # nicht zurueckrollen kann.
+            #
+            # lp kann odd/even ueber -o page-set; das Backend ist also
+            # nicht gleichwertig, und das gehoert gesagt statt
+            # verschwiegen.
+            error "printlib::print: -pages '$pages' ist mit dem Backend\
+                    pdftocairo nicht moeglich -- nur eine Seitenzahl\
+                    oder ein Bereich wie 1-3. odd/even gehen nur ueber lp."
         }
     }
 
@@ -484,6 +830,12 @@ proc ::printlib::_print_pdftocairo {pdffile opts} {
     # Echter Fehler: Exit-Code != 0, erkennbar an "child process exited"
     lappend cmd 2>@1
 
+    return $cmd
+}
+
+proc ::printlib::_print_pdftocairo {pdffile opts} {
+    set cmd [_cmd_pdftocairo $pdffile $opts]
+
     # Kopien: pdftocairo hat keine native -copies-Option (Stand 2026).
     # Workaround: n-mal nacheinander drucken. Bei Fehler im Lauf wird
     # abgebrochen und der bisher gelaufene Druckumfang gemeldet.
@@ -492,10 +844,10 @@ proc ::printlib::_print_pdftocairo {pdffile opts} {
         set copies 1
     }
     for {set i 1} {$i <= $copies} {incr i} {
-        if {[catch {exec {*}$cmd} err]} {
-            # Nur echter Fehler (Exit-Code != 0) — Warnungen durchlassen
-            if {[string match "*child process exited abnormally*" $err] ||
-                [string match "*Error:*" $err]} {
+        if {[catch {exec {*}$cmd} err opt]} {
+            # Warnungen auf stderr durchlassen, echte Fehler nicht --
+            # entschieden wird das am Exit-Code, nicht am Text.
+            if {[_execFehler $opt]} {
                 if {$copies > 1} {
                     error "printlib (pdftocairo): Fehler in Kopie $i von $copies: $err"
                 } else {
@@ -510,7 +862,7 @@ proc ::printlib::_print_pdftocairo {pdffile opts} {
 # -------------------------------------------------------------------------
 # _print_sumatra -- Drucken via SumatraPDF (Bitmap-Fallback)
 # -------------------------------------------------------------------------
-proc ::printlib::_print_sumatra {pdffile opts} {
+proc ::printlib::_cmd_sumatra {pdffile opts} {
     variable cfg
 
     set exe [dict get $cfg sumatra]
@@ -589,8 +941,12 @@ proc ::printlib::_print_sumatra {pdffile opts} {
 
     lappend cmd $pdffile
 
-    if {[catch {exec {*}$cmd} err]} {
-        error "printlib (SumatraPDF): $err"
+    return $cmd
+}
+
+proc ::printlib::_print_sumatra {pdffile opts} {
+    if {[catch {exec {*}[_cmd_sumatra $pdffile $opts]} err opt]} {
+        if {[_execFehler $opt]} { error "printlib (SumatraPDF): $err" }
     }
     return ""
 }
@@ -615,7 +971,7 @@ proc ::printlib::_print_sumatra {pdffile opts} {
 # 'silent' ist bei lp nicht noetig: lp gibt nur eine Job-ID auf stdout
 # zurueck, keine Dialoge.
 # -------------------------------------------------------------------------
-proc ::printlib::_print_lp {pdffile opts} {
+proc ::printlib::_cmd_lp {pdffile opts} {
     variable cfg
 
     set exe [dict get $cfg lp]
@@ -654,10 +1010,28 @@ proc ::printlib::_print_lp {pdffile opts} {
 
     # Kassette: CUPS InputSlot. Werte sind treiberabhaengig -- gaengig:
     # Upper, Lower, Middle, Manual, Auto, Envelope, Tray1, Tray2, ...
-    # printlib uebergibt den Wert wie eingegeben (string totitle hilft).
+    #
+    # 30.09.2026: hier stand "string totitle $source". totitle macht den
+    # ersten Buchstaben gross UND ALLE ANDEREN KLEIN. Gemessen:
+    #
+    #   MultiPurpose   -> Multipurpose
+    #   PhotoTray      -> Phototray
+    #   LargeCapacity  -> Largecapacity
+    #
+    # Genau solche Namen stehen in den PPDs von HP und Brother, und genau
+    # sie liefert printercaps aus "lpoptions -l" -- also der Weg, auf dem
+    # eine Anwendung ihre Schachtliste bekommt. Der Wert kam vom Treiber
+    # und wurde auf dem Weg zurueck unbrauchbar gemacht; CUPS nimmt den
+    # unbekannten Schacht nicht und druckt aus dem Standardfach. Das faellt
+    # erst auf, wenn der Bogen im falschen Papier liegt.
+    #
+    # Gewollt war nur: "manual" soll auch als "Manual" ankommen. Dafuer
+    # reicht der erste Buchstabe -- der Rest bleibt, wie der Treiber ihn
+    # geschrieben hat.
     set source [dict get $opts source]
     if {$source ne ""} {
-        lappend lpOpts "InputSlot=[string totitle $source]"
+        set slot "[string toupper [string index $source 0]][string range $source 1 end]"
+        lappend lpOpts "InputSlot=$slot"
     }
 
     # Duplex: nur 'long' und 'short' aktiv setzen. 'off' (Default) bedeutet
@@ -697,38 +1071,33 @@ proc ::printlib::_print_lp {pdffile opts} {
         even { lappend lpOpts "page-set=even" }
     }
 
-    # Orientierung (CUPS-Standard: 3=portrait, 4=landscape)
+    # Orientierung. IPP orientation-requested: 3=portrait, 4=landscape,
+    # 5=reverse-landscape, 6=reverse-portrait.
+    #
+    # 01.10.2026: fuer portrait stand hier ein leerer Zweig mit dem
+    # Kommentar "CUPS-Default". Drei von vier Werten wurden also geschickt,
+    # einer nicht -- und damit liess sich nicht mehr unterscheiden, ob
+    # portrait gewirkt hat oder ob nur nichts angekommen ist. printlib
+    # sagt in seinen eigenen Vorgaben "orientation portrait"; dann gehoert
+    # das auch so an CUPS, statt auf eine Voreinstellung zu hoffen.
+    #
+    # ACHTUNG, Verhaltensaenderung: wer sich bisher darauf verlassen hat,
+    # dass printlib die Orientierung des Treibers unangetastet laesst,
+    # bekommt jetzt ausdruecklich portrait. Das entspricht der Vorgabe,
+    # die printlib ohnehin dokumentiert.
     set orient [dict get $opts orientation]
     switch -- $orient {
+        portrait           { lappend lpOpts "orientation-requested=3" }
         landscape          { lappend lpOpts "orientation-requested=4" }
-        portrait           { }  ;# CUPS-Default
         reverse-landscape  { lappend lpOpts "orientation-requested=5" }
         reverse-portrait   { lappend lpOpts "orientation-requested=6" }
     }
 
-    # Auto-Cut (Brother QL-Drucker): CUPS-Treiber-spezifisch.
-    # Brother CUPS-Treiber kennen typischerweise CutLabel oder AutoCut.
-    # Es werden mehrere gaengige Schalter gesetzt -- der Treiber waehlt
-    # den passenden, unbekannte werden ignoriert.
-    set cutMode [dict get $opts cut]
-    switch -- $cutMode {
-        on    -
-        auto  -
-        always {
-            # Nach jedem Etikett schneiden
-            lappend lpOpts "CutLabel=ON"
-            lappend lpOpts "AutoCut=ON"
-        }
-        off   -
-        none  -
-        never {
-            lappend lpOpts "CutLabel=OFF"
-            lappend lpOpts "AutoCut=OFF"
-        }
-        end {
-            # Nur am Job-Ende schneiden
-            lappend lpOpts "CutAtEnd=ON"
-        }
+    # Schneiden: der Name der Option und ihre Werte kommen vom TREIBER,
+    # nicht aus einer Vermutung (siehe _cutLpOpts).
+    lassign [_cutCaps $printer] cutOpt cutVals
+    foreach o [_cutLpOpts [dict get $opts cut] $cutOpt $cutVals] {
+        lappend lpOpts $o
     }
 
     # Alle -o Optionen anhaengen
@@ -738,8 +1107,12 @@ proc ::printlib::_print_lp {pdffile opts} {
 
     lappend cmd $pdffile
 
-    if {[catch {exec {*}$cmd} err]} {
-        error "printlib (lp): $err"
+    return $cmd
+}
+
+proc ::printlib::_print_lp {pdffile opts} {
+    if {[catch {exec {*}[_cmd_lp $pdffile $opts]} err opt]} {
+        if {[_execFehler $opt]} { error "printlib (lp): $err" }
     }
     return ""
 }
@@ -1226,7 +1599,7 @@ proc ::printlib::_printercaps_wmi {printername} {
     # Hinweis: viele Treiber (z.B. Kyocera) fuellen ColorSupported/Duplex nicht.
     # In dem Fall bleibt color/duplex leer -- kein Fehler.
     set ::env(PRINTLIB_PRINTER) $printername
-    set ps1 [file join $::env(TEMP) printlib_caps.ps1]
+    set ps1 [file join [tmpdir] printlib_caps.ps1]
     catch {
         set fd [open $ps1 w]
         puts $fd {$n = $env:PRINTLIB_PRINTER}
@@ -1693,6 +2066,30 @@ proc ::printlib::_printercaps_linux {printername} {
         dict set result duplex 0
     }
 
+    # Schneiden -> cut_option / cut_values / cut_default
+    #
+    # 01.10.2026: bis hierher wurde die Option weggeworfen, obwohl sie in
+    # lpoptions steht. Gemessen an einem Brother QL-820NWB:
+    #
+    #   CutMedia/CutMedia: *None Auto EndOfPage EndOfJob
+    #
+    # printlib schickte dagegen CutLabel=ON / AutoCut=ON / CutAtEnd=ON --
+    # Namen, die dieser Treiber nicht kennt. CUPS uebergeht unbekannte
+    # Optionen stillschweigend, es blieb bei *None, und das Etikett wurde
+    # nicht geschnitten. Gemeldet mit allen vier Einstellungen (auto, on,
+    # off, end): kein Schnitt.
+    #
+    # Wie der Schacht heisst auch das Schneiden bei jedem Treiber anders.
+    # Darum wird der Name hier GELESEN statt geraten.
+    foreach kandidat {CutMedia CutLabel AutoCut BrCutAtEnd CutAtEnd Cut} {
+        if {![dict exists $lpopts $kandidat]} continue
+        set c [dict get $lpopts $kandidat]
+        dict set result cut_option  $kandidat
+        dict set result cut_values  [dict get $c values]
+        dict set result cut_default [dict get $c default]
+        break
+    }
+
     # ColorModel -> color (boolean)
     if {[dict exists $lpopts ColorModel]} {
         set c [dict get $lpopts ColorModel]
@@ -1768,14 +2165,54 @@ proc ::printlib::status {} {
     set hasLp      [_available lp]
     set hasPdfium  [_available pdfium]
 
+    # "present" heisst: das Programm bzw. die Bindung ist da.
+    # "can_print" heisst: ueber detect kaeme wirklich ein Auftrag heraus.
+    #
+    # Die beiden Fragen sind NICHT dasselbe, und bis 17.09.2026 hiessen
+    # beide "_ok". Unter Linux meldete pdftocairo_ok 1, weil `pdftocairo
+    # -v` antwortet -- gedruckt haette es nie, weil die Registry dort nur
+    # lp freigibt. Die Zeile las sich wie "pdftocairo kann drucken".
+    #
+    # Die alten *_ok-Schluessel bleiben als Synonym erhalten, damit
+    # bestehende Aufrufer nicht brechen.
+    #
+    # NICHT detect rufen: detect setzt activeBackend, und status ist eine
+    # reine Auskunft -- ein Aufruf darf den Zustand nicht veraendern.
+    # Gemessen 17.09.2026: mit [detect] hier sprang activeBackend nach
+    # jedem status auf den erkannten Wert, auch nach configure -backend.
+    #
+    # Stattdessen dieselbe Frage ohne Seiteneffekt: kaeme ueber die
+    # Plattformkette ein Backend heraus?
+    set want [dict get $cfg backend]
+    if {$want ne "auto"} {
+        set active [expr {[_available $want] ? $want : "none"}]
+    } else {
+        set platform $::tcl_platform(platform)
+        set chain [_backendsFor $platform]
+        if {$platform eq "windows" && [dict get $cfg pdfiumPrefer]} {
+            set chain [linsert [lsearch -all -inline -not $chain pdfium] 0 pdfium]
+        }
+        set active none
+        foreach be $chain {
+            if {[_available $be]} { set active $be ; break }
+        }
+    }
+
     return [dict create \
-        version        0.2 \
-        backend_active $activeBackend \
-        pdftocairo_ok  $hasCairo \
-        sumatra_ok     $hasSumatra \
-        lp_ok          $hasLp \
-        pdfium_ok      $hasPdfium \
-        config         $cfg \
+        version            [package provide printlib] \
+        backend_active     $activeBackend \
+        backends           [known] \
+        can_print          [expr {$active ne "none"}] \
+        backend_detected   $active \
+        pdftocairo_present $hasCairo \
+        sumatra_present    $hasSumatra \
+        lp_present         $hasLp \
+        pdfium_present     $hasPdfium \
+        pdftocairo_ok      $hasCairo \
+        sumatra_ok         $hasSumatra \
+        lp_ok              $hasLp \
+        pdfium_ok          $hasPdfium \
+        config             $cfg \
     ]
 }
 
@@ -1887,8 +2324,11 @@ proc ::printlib::loadPpdFile {path} {
             set line [string trim $line]
             if {$line eq "" || [string match "#*" $line]} continue
             # Zuerst quoted-Form versuchen, dann Standard
-            if {[regexp {^(\S+)\s+"([^"]*)"\s*$} $line -> key val] ||
-                [regexp {^(\S+)\s+(.+)$}         $line -> key val]} {
+            # Gequotete Form zuerst: der Inhalt darf maskierte
+            # Anfuehrungszeichen (\") und Backslashes (\\) enthalten.
+            if {[regexp {^(\S+)\s+"((?:[^"\\]|\\.)*)"\s*$} $line -> key val]} {
+                dict set result $key [string map [list \\\" \" \\\\ \\] $val]
+            } elseif {[regexp {^(\S+)\s+(.+)$} $line -> key val]} {
                 dict set result $key [string trim $val]
             }
         }
@@ -1951,9 +2391,15 @@ proc ::printlib::savePpdFile {printer backend opts} {
         puts $fd "# Erzeugt: $ts"
         puts $fd ""
         dict for {key val} $opts {
-            # Werte mit Leerzeichen oder Anfuehrungszeichen quoten
-            if {[regexp {[\s"]} $val] || $val eq ""} {
-                puts $fd "$key \"$val\""
+            # Werte mit Leerzeichen oder Anfuehrungszeichen quoten.
+            #
+            # Das Anfuehrungszeichen IM Wert muss dabei maskiert werden,
+            # sonst endet der gequotete Bereich zu frueh. Gemessen
+            # 17.09.2026: 'Foto "matt"' kam als '"Foto "matt""' zurueck
+            # -- der Rundlauf war fuer solche Werte kaputt.
+            if {[regexp {[\s"\\]} $val] || $val eq ""} {
+                set q [string map [list \\ \\\\ \" \\\"] $val]
+                puts $fd "$key \"$q\""
             } else {
                 puts $fd "$key $val"
             }
@@ -1988,6 +2434,28 @@ proc ::printlib::_applyPpdToOpts {optsVar ppd cliKeys} {
 # -------------------------------------------------------------------------
 proc ::printlib::_available {which} {
     variable cfg
+    variable backends
+
+    # Die Registry sagt, auf welcher Plattform es ein Backend ueberhaupt
+    # gibt. Eine vorhandene Binary ist kein Beweis: pdftocairo liegt auf
+    # Linux in /usr/bin, aber die Option -print gibt es nur im
+    # Windows-Build von poppler. Gemessen am 30.09.2026 unter Debian:
+    #
+    #   $ pdftocairo -h | grep -c '^  -print'
+    #   0
+    #   % printlib::configure -backend pdftocairo ; printlib::detect
+    #   pdftocairo            <- und der naechste print scheitert
+    #
+    # detect fragt die Registry ueber _backendsFor nur fuer den auto-Weg;
+    # wer das Backend ausdruecklich nennt, kam daran vorbei. Auch
+    # inv-backends-1.1 prueft genau den auto-Fall, also den, der schon
+    # ging. Seit 0.3.1 gilt die Registry an der Stelle, an der ALLE Wege
+    # vorbeikommen.
+    if {[dict exists $backends $which platforms]
+        && $::tcl_platform(platform) ni [dict get $backends $which platforms]} {
+        return 0
+    }
+
     switch -- $which {
         pdftocairo {
             set exe [dict get $cfg pdftocairo]
@@ -2136,13 +2604,13 @@ proc ::printlib::_print_pdfium {pdffile opts} {
     variable cfg
 
     if {[catch {package require pdfiumtcl} e]} {
-        error "printlib (pdfium): pdfiumtcl not available: $e"
+        error "printlib (pdfium): pdfiumtcl nicht verfuegbar: $e"
     }
 
     set printer [dict get $opts printer]
     if {$printer eq ""} {
         if {[catch {::pdfium::defaultprinter} printer]} {
-            error "printlib (pdfium): no printer given and no system default"
+            error "printlib (pdfium): kein Drucker angegeben und kein Systemstandard"
         }
     }
 
@@ -2161,7 +2629,7 @@ proc ::printlib::_print_pdfium {pdffile opts} {
         } elseif {[string is integer -strict $pages]} {
             lappend a -from [expr {$pages - 1}] -to [expr {$pages - 1}]
         } else {
-            error "printlib (pdfium): invalid page range: $pages"
+            error "printlib (pdfium): ungueltiger Seitenbereich: $pages"
         }
     }
 
@@ -2178,7 +2646,7 @@ proc ::printlib::_print_pdfium {pdffile opts} {
         short - horizontal { lappend a -duplex short }
         off   - ""         { }
         default {
-            error "printlib (pdfium): invalid duplex value: $duplex"
+            error "printlib (pdfium): ungueltiger Duplex-Wert: $duplex"
         }
     }
 
@@ -2206,9 +2674,9 @@ proc ::printlib::_print_pdfium {pdffile opts} {
         set form [_pdfiumFormForLabel $printer $paper $pdffile]
         if {$form eq ""} {
             set meta [labelsize $paper]
-            error "printlib (pdfium): no driver form for $paper\
-                   ([dict get $meta width_mm] mm) on '$printer' --\
-                   available forms: ::pdfium::papers"
+            error "printlib (pdfium): kein Treiberformat fuer $paper\
+                   ([dict get $meta width_mm] mm) auf '$printer' --\
+                   bekannte Formate: ::pdfium::papers"
         }
         # Labels always print 1:1 -- any scaling shifts the output on
         # the tape.

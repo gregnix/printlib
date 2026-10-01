@@ -20,11 +20,17 @@ set root [file dirname $here]        ;# repo root (test/ is one below)
 
 # Find a shipped file across the possible layouts (0.3 repo uses lib/tm;
 # the old vendor/ layout kept everything next to the test).
+#
+# doc/ is in the list since 17.09.2026: printlib-booklet.tcl moved there
+# because it is a draft, not shipped code -- the module never sources it.
+# The guard still compares the test copy against it, so the copy cannot
+# drift away from the draft either.
 proc _find {name} {
     global here root
     foreach cand [list \
             [file join $root lib tm $name] \
             [file join $root lib tm printlib $name] \
+            [file join $root doc $name] \
             [file join $here $name] \
             [file join $root $name]] {
         if {[file exists $cand]} { return $cand }
@@ -51,7 +57,18 @@ proc cutProc {file name} {
 }
 
 set testFile   [file join $here test-pdfium-backend.tcl]
-set moduleFile [_find printlib-0.3.tm]
+# Den Dateinamen ABLEITEN, nicht festschreiben. Hier stand
+# "_find printlib-0.3.tm"; beim Sprung auf 0.3.1 haette der Waechter
+# die alte Datei gesucht, nicht gefunden und -- je nach Lage -- entweder
+# laut gefehlt oder eine danebenliegende alte Fassung verglichen.
+# Ein Waechter, der die falsche Datei bewacht, ist keiner.
+if {[catch {package require printlib}]} {
+    # Nicht im Modulpfad: dann ueber die Datei selbst gehen.
+    foreach cand [glob -nocomplain [file join $root lib tm printlib-*.tm]] {
+        if {![catch {source $cand}]} { break }
+    }
+}
+set moduleFile [_find printlib-[package provide printlib].tm]
 set bookletFile [_find printlib-booklet.tcl]
 
 # name -> file that holds the real definition
