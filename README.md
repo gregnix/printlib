@@ -1,4 +1,4 @@
-# printlib 0.3.1
+# printlib 0.3.2
 
 Cross-platform PDF printing library for Tcl/Tk.
 
@@ -12,7 +12,7 @@ Put the Tcl module, named by the `name-version.tm` convention, on a tm path:
 
 ```bash
 mkdir -p ~/.local/lib/tcl8/site-tcl
-cp lib/tm/printlib-0.3.1.tm ~/.local/lib/tcl8/site-tcl/
+cp lib/tm/printlib-0.3.2.tm ~/.local/lib/tcl8/site-tcl/
 ```
 
 Or leave it in place and add the path to Tcl:
@@ -168,7 +168,7 @@ Search order for PPD files:
 | Option | Values | Effect |
 |--------|--------|--------|
 | `-printer` | printer name | target printer |
-| `-scale` | `noscale fit shrink expand match origsize` | scaling mode |
+| `-scale` | `noscale fit shrink expand match origsize` | scaling mode, see below |
 | `-paper` | `A4 A3 ... DK22205 ...` | paper / media size |
 | `-source` | `upper lower middle manual ...` | tray |
 | `-duplex` | `off long short` | duplex mode |
@@ -178,6 +178,39 @@ Search order for PPD files:
 | `-orientation` | `portrait landscape reverse-landscape reverse-portrait` | print orientation |
 | `-cut` | `auto on off end` | auto-cut for label printers |
 | `-backend` | `auto pdfium pdftocairo sumatra lp` | force a backend |
+
+### Scaling, and why `noscale` has to say something
+
+`noscale` is the default and means "print 1:1". Up to 0.3.1 the `lp` backend
+sent **nothing** for it: the application asked for original size, and nothing
+to that effect left the machine. What happened then was the filter chain's
+decision, and a generic IPP Everywhere PPD without margin information scales
+the page down to the printable area.
+
+On anything measured in millimetres -- a sheet of labels above all -- that is
+expensive to diagnose, because it shows up as an offset that **grows with
+every item** and looks exactly like wrong geometry. Reach for the sheet
+dimensions at that point and the error moves into the profile, where it is
+correct for one printer and wrong everywhere else.
+
+Since 0.3.2, `noscale` and `origsize` send `print-scaling=none`. It goes out
+unconditionally -- CUPS passes over unknown options silently -- and whether
+the printer knows it is a separate question:
+
+```sh
+lpoptions -p NAME -l | grep print-scaling
+```
+
+```tcl
+set caps [printlib::printercaps $name]
+dict get $caps scaling_option    ;# print-scaling, if the driver offers it
+dict get $caps scaling_default   ;# not "none" -> it scales unless told
+```
+
+Missing from `printercaps` means printlib still sends the option, and whether
+it arrives cannot be established from here. That is the difference between
+*sent* and *applied*, and it is worth keeping apart: `fit-to-page` and
+`print-scaling=none` are both just text until a filter acts on them.
 
 ## Precedence with several sources
 
@@ -253,7 +286,13 @@ GDI/DEVMODE in-process -- and `command` says so instead of inventing one.
 
 ## Versions
 
-- **0.3.1** (current): `command`; `_available` obeys the platform registry
+- **0.3.2** (current): `-scale noscale` actually sends `print-scaling=none`
+  (it sent nothing); `lpoptions` option names with a hyphen are no longer
+  merged onto one key -- on a driverless IPP printer `print-scaling`,
+  `print-quality` and `print-color-mode` all became `print`; `printercaps`
+  reports `scaling_option`/`scaling_values`/`scaling_default` and carries the
+  raw `lpoptions` table; the GUI diagnosis prints the scaling option
+- **0.3.1**: `command`; `_available` obeys the platform registry
   on the explicit path too; PPD autoload no longer breaks `print` with
   pdfium + printer name; a failed print no longer reports success
   (exit code instead of text matching); `print`'s documented return

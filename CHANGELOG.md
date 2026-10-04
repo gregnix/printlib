@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.3.2
+
+Same fault class as the cut in 0.3.1, two more places: an option that was
+promised and never sent, and a parser that silently merged three driver
+capabilities into one.
+
+### Fixed
+
+- **`-scale noscale` sent nothing at all.** It is printlib's default and it
+  means "print 1:1". For the `lp` backend the `switch` fell through to an
+  empty branch, so the application asked for original size and nothing to
+  that effect left the machine -- what happened next was up to the filter
+  chain. A generic IPP Everywhere PPD without margin information scales the
+  page down to the printable area, and on a sheet of labels that shows up as
+  an offset that **grows with every label**, which looks exactly like wrong
+  geometry.
+
+  That is not hypothetical. On 01.10.2026 gaps of 1.9 / 0.6 mm were entered
+  into a label profile for a sheet whose manufacturer template is measurably
+  gapless (column pitch 48.498 mm, row pitch 16.900 mm). The scaling that
+  would make those gaps correct is 96.2 % in X and 96.6 % in Y -- nearly the
+  same figure on both axes, which is a page scaling, not a sheet with gaps.
+
+  `noscale` and `origsize` now send **`print-scaling=none`** ("do not scale
+  the document to fit the requested media size", implemented in cups-filters
+  / libcupsfilters). It is sent unconditionally: CUPS passes over unknown
+  options silently, so a printer that does not know it takes no harm.
+
+  `fit` / `shrink` / `expand` keep `fit-to-page`. That works, it is not
+  measured here, and changing it without measuring would be the very mistake
+  this entry fixes.
+
+- **Option names with a hyphen were lost.** `_printercaps_linux` matched
+  `^([A-Za-z][A-Za-z0-9_]*)` -- no hyphen. On a driverless IPP printer the
+  options are named exactly that way, and measured against real lines:
+
+  ```text
+  print-color-mode/Print Color Mode: ...   ->  read as "print"
+  print-scaling/Print Scaling: ...         ->  read as "print"
+  print-quality/Print Quality: ...         ->  read as "print"
+  ```
+
+  Three capabilities onto **one** key, each overwriting the one before. No
+  error, no gap in the output -- just a capability called `print` that means
+  nothing, and three real ones gone. `CutMedia` and `InputSlot` came through
+  because they carry no hyphen, which is why the cut work never ran into it.
+
+### Added
+
+- **`printercaps` reports the scaling option** as `scaling_option`,
+  `scaling_values` and `scaling_default` -- the same treatment the cut got in
+  0.3.1, and for the same reason: because unknown options are dropped
+  silently, "sent" and "arrived" look alike. `scaling_default` is the
+  interesting one; if it is not `none`, that printer scales unless told
+  otherwise.
+
+- **`printercaps` carries the raw option table** under `lpoptions`
+  (`{Name {default D values {...}}} ...`). Every capability printlib maps
+  today exists because somebody read `lpoptions -l` instead of guessing a
+  name. With the table in the dict an application can see what the driver
+  really offers without printlib having to know each option in advance.
+
+- **The GUI diagnosis prints the scaling option** and warns when the
+  driver's default is not `none`.
+
+### Tests
+
+Eleven new cases in `test/test-module-invariants.tcl` (now 60):
+`inv-scale-1.0` … `1.4` on what the command line carries, and `inv-caps-2.0`
+… `2.4` against an `lpoptions` stub on the PATH -- no printer needed, and the
+path measured is the one `printercaps` takes for real.
+
+`inv-caps-2.2` was wrong on the first attempt: it asked `dict exists $caps
+print` and passed against the broken version too, because the bogus key
+landed in an internal table and never in the result. A test that is green for
+the wrong reason is worse than none; `printercaps` now hands out the table,
+and the case counts the three options.
+
+Against 0.3.1, six of the eleven fail. Not verified here: whether a real
+CUPS applies `print-scaling=none` -- that needs a printer.
+`lpoptions -p NAME -l | grep print-scaling` says whether yours offers it.
+
 ## 0.3.1
 
 ### Changed

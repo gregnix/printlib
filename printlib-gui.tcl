@@ -173,6 +173,31 @@ proc on_printer_change_do {} {
         set cut auto
     }
 
+    # --- Skalierung: wird 1:1 ueberhaupt verstanden? ---
+    #
+    # 01.10.2026. printlib sendet bei "noscale" jetzt print-scaling=none.
+    # CUPS uebergeht unbekannte Optionen stillschweigend, also sieht
+    # "gesendet" genauso aus wie "angekommen" -- und der Unterschied ist
+    # ein Etikettenbogen in der richtigen Groesse oder einer um ein paar
+    # Prozent zu kleinen. Was der Treiber meldet, gehoert darum ins Log.
+    if {[dict exists $caps scaling_option]} {
+        set sdef ""
+        if {[dict exists $caps scaling_default]} {
+            set sdef " (Vorgabe: [dict get $caps scaling_default])"
+        }
+        log "Skalierung: [dict get $caps scaling_option] =\
+[dict get $caps scaling_values]$sdef"
+        if {[dict exists $caps scaling_default]
+            && [dict get $caps scaling_default] ne "none"} {
+            log "  Achtung: ohne Angabe skaliert dieser Drucker\
+([dict get $caps scaling_default]). printlib sendet bei -scale noscale\
+print-scaling=none."
+        }
+    } else {
+        log "Skalierung: der Treiber nennt keine Option -- printlib sendet\
+print-scaling=none, ob es ankommt, ist nicht feststellbar"
+    }
+
     # --- Kassetten-Combobox befuellen ---
     # Etikettendrucker haben keine Kassetten (Endlosrolle/Die-Cut von Rolle)
     if {$isLabel} {

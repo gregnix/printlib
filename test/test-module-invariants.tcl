@@ -777,4 +777,167 @@ test inv-orient-1.1 {die Zahlen folgen IPP, nicht einer eigenen Zaehlung} -body 
     expr {[lsearch -exact $z "orientation-requested=4"] >= 0}
 } -result 1
 
+# --------------------------------------------------------------------------
+# Skalierung: "noscale" muss auch etwas SENDEN (01.10.2026)
+# --------------------------------------------------------------------------
+#
+# "-scale noscale" ist die Vorgabe von printlib und heisst "1:1 drucken".
+# Fuer lp wurde dafuer gar nichts gesendet: die Anwendung bat um
+# Originalgroesse, und auf dem Weg nach draussen stand nichts davon. Was
+# dann geschieht, entscheidet der Filterweg -- und ein generisches
+# IPP-Everywhere-PPD ohne Randangaben verkleinert auf den bedruckbaren
+# Bereich.
+#
+# Auf einem Etikettenbogen sieht das aus wie ein Versatz, der mit jedem
+# Etikett waechst, und man sucht den Fehler in der Geometrie. Genau das ist
+# am 01.10.2026 im Etikettendruck passiert: dort wurden Luecken von
+# 1,9 / 0,6 mm eingetragen, um rund 96 % Verkleinerung auszugleichen.
+
+test inv-scale-1.0 {noscale sendet print-scaling=none} -body {
+    set z [printlib::command demo.pdf -backend lp -printer P -scale noscale]
+    expr {[lsearch -exact $z "print-scaling=none"] >= 0}
+} -result 1
+
+test inv-scale-1.1 {noscale ist die Vorgabe -- auch ohne -scale} -body {
+    # Sonst waere die Zusage nur da, wo jemand sie ausdruecklich nennt.
+    set z [printlib::command demo.pdf -backend lp -printer P]
+    expr {[lsearch -exact $z "print-scaling=none"] >= 0}
+} -result 1
+
+test inv-scale-1.2 {origsize heisst dasselbe und sendet dasselbe} -body {
+    set z [printlib::command demo.pdf -backend lp -printer P -scale origsize]
+    expr {[lsearch -exact $z "print-scaling=none"] >= 0}
+} -result 1
+
+test inv-scale-1.3 {fit/shrink/expand bleiben bei fit-to-page} -body {
+    # Das laeuft und ist hier nicht nachgemessen. Eine Umstellung ohne
+    # Messung waere genau der Fehler, den inv-scale-1.0 gerade behebt.
+    set schief {}
+    foreach s {fit shrink expand} {
+        set z [printlib::command demo.pdf -backend lp -printer P -scale $s]
+        if {[lsearch -exact $z "fit-to-page"] < 0} { lappend schief $s }
+        if {[lsearch -exact $z "print-scaling=none"] >= 0} { lappend schief "$s+none" }
+    }
+    set schief
+} -result {}
+
+test inv-scale-1.4 {kein Modus sendet zwei widerspruechliche Angaben} -body {
+    set schief {}
+    foreach s {noscale fit shrink expand match origsize} {
+        set z [printlib::command demo.pdf -backend lp -printer P -scale $s]
+        if {[lsearch -exact $z "fit-to-page"] >= 0
+            && [lsearch -exact $z "print-scaling=none"] >= 0} {
+            lappend schief $s
+        }
+    }
+    set schief
+} -result {}
+
+# --------------------------------------------------------------------------
+# lpoptions: Optionsnamen mit Bindestrich (01.10.2026)
+# --------------------------------------------------------------------------
+#
+# Die Regex in _printercaps_linux liess keinen Bindestrich im Namen zu. Bei
+# einem treiberlosen IPP-Drucker heissen die Optionen aber genau so.
+# Gemessen an echten Zeilen:
+#
+#   print-color-mode/Print Color Mode: ...  -> erkannt als "print"
+#   print-scaling/Print Scaling: ...        -> erkannt als "print"
+#   print-quality/Print Quality: ...        -> erkannt als "print"
+#
+# Drei Optionen auf EINEN Schluessel, jede ueberschreibt die vorige. Kein
+# Fehler, keine Luecke -- nur eine Faehigkeit namens "print", die nichts
+# bedeutet. CutMedia und InputSlot kamen durch, weil sie keinen Bindestrich
+# tragen; darum fiel es bei den Schneidetests nicht auf.
+#
+# Geprueft wird mit einem lpoptions auf dem PATH -- kein Drucker noetig,
+# und gemessen wird genau der Weg, den printercaps im Ernstfall geht.
+
+proc lpoptionsStub {text} {
+    set d [makeDirectory lpstub]
+    set p [file join $d lpoptions]
+    set fh [open $p w]
+    chan configure $fh -translation lf
+    puts $fh "#!/bin/sh"
+    puts $fh "cat <<'OUT'"
+    puts $fh $text
+    puts $fh "OUT"
+    close $fh
+    file attributes $p -permissions 0755
+    return $d
+}
+
+set ippZeilen {InputSlot/Media Source: *Auto Manual
+PageSize/Media Size: *29x90mm 62x100mm
+CutMedia/CutMedia: *None Auto EndOfPage EndOfJob
+print-color-mode/Print Color Mode: *monochrome auto
+print-scaling/Print Scaling: *auto auto-fit fill fit none
+print-quality/Print Quality: *4 3 5}
+
+test inv-caps-2.0 {Optionsnamen mit Bindestrich kommen vollstaendig an} \
+  -constraints unix -setup {
+    set ::altPath $::env(PATH)
+    set ::env(PATH) "[lpoptionsStub $::ippZeilen]:$::altPath"
+} -body {
+    set caps [::printlib::_printercaps_linux QL820]
+    list [dict exists $caps scaling_option] \
+         [expr {[dict exists $caps scaling_option]
+                ? [dict get $caps scaling_option] : ""}]
+} -cleanup {set ::env(PATH) $::altPath} -result {1 print-scaling}
+
+test inv-caps-2.1 {die Werte der Option gehen nicht verloren} \
+  -constraints unix -setup {
+    set ::altPath $::env(PATH)
+    set ::env(PATH) "[lpoptionsStub $::ippZeilen]:$::altPath"
+} -body {
+    set caps [::printlib::_printercaps_linux QL820]
+    list [dict get $caps scaling_values] [dict get $caps scaling_default]
+} -cleanup {set ::env(PATH) $::altPath} -result {{auto auto-fit fill fit none} auto}
+
+test inv-caps-2.2 {die drei print-* Optionen bleiben drei} -constraints unix -setup {
+    set ::altPath $::env(PATH)
+    set ::env(PATH) "[lpoptionsStub $::ippZeilen]:$::altPath"
+} -body {
+    # Der Kern des alten Fehlers: drei Optionen fielen auf EINEN Schluessel
+    # "print" zusammen, jede ueberschrieb die vorige.
+    #
+    # Der erste Anlauf dieses Falls fragte "dict exists $caps print" -- und
+    # bestand auch gegen die alte Fassung, weil der falsche Schluessel in
+    # einer internen Tabelle landete und nie im Ergebnis. Ein Test, der
+    # aus dem falschen Grund gruen ist, ist schlimmer als keiner. Seitdem
+    # gibt printercaps die gelesene Tabelle mit, und hier wird sie gezaehlt.
+    set caps [::printlib::_printercaps_linux QL820]
+    set opts [dict get $caps lpoptions]
+    set da {}
+    foreach n {print-scaling print-quality print-color-mode} {
+        if {[dict exists $opts $n]} { lappend da $n }
+    }
+    list [lsort $da] [dict exists $opts print]
+} -cleanup {set ::env(PATH) $::altPath} \
+  -result {{print-color-mode print-quality print-scaling} 0}
+
+test inv-caps-2.3 {Namen OHNE Bindestrich kommen weiter durch} \
+  -constraints unix -setup {
+    set ::altPath $::env(PATH)
+    set ::env(PATH) "[lpoptionsStub $::ippZeilen]:$::altPath"
+} -body {
+    # Gegenprobe zur Regex-Aenderung: sie darf nichts kaputtmachen, was
+    # vorher ging. CutMedia ist der Fall, an dem der Schnitt haengt.
+    set caps [::printlib::_printercaps_linux QL820]
+    list [dict get $caps cut_option] [dict get $caps bins]
+} -cleanup {set ::env(PATH) $::altPath} -result {CutMedia {Auto Manual}}
+
+test inv-caps-2.4 {ein Drucker ohne print-scaling meldet es auch nicht} \
+  -constraints unix -setup {
+    set ::altPath $::env(PATH)
+    set ::env(PATH) "[lpoptionsStub "InputSlot/Media Source: *Auto Manual
+PageSize/Media Size: *A4 Letter"]:$::altPath"
+} -body {
+    # Wichtig fuer den Aufrufer: "nicht gemeldet" heisst, dass
+    # print-scaling=none zwar gesendet, aber vermutlich uebergangen wird.
+    # Das ist der Unterschied zwischen gesendet und angekommen.
+    set caps [::printlib::_printercaps_linux P]
+    dict exists $caps scaling_option
+} -cleanup {set ::env(PATH) $::altPath} -result 0
+
 cleanupTests

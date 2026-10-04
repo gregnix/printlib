@@ -1,4 +1,4 @@
-# printlib-0.3.1.tm
+# printlib-0.3.2.tm
 #
 # Plattformuebergreifende PDF-Druckbibliothek fuer Tcl/Tk
 # Unterstuetzt: pdftocairo (Vektor), SumatraPDF (Bitmap-Fallback)
@@ -47,7 +47,7 @@
 #   - redundantes variable-Statement entfernt
 #   - PowerShell-Ausgabe-Parsing: Style-Fixes
 
-package provide printlib 0.3.1
+package provide printlib 0.3.2
 package require Tcl 8.6-
 
 namespace eval ::printlib {
@@ -1054,14 +1054,35 @@ proc ::printlib::_cmd_lp {pdffile opts} {
     }
 
     # Skalierung
+    #
+    # 01.10.2026: "noscale" sendete NICHTS.
+    #
+    # Es ist die Vorgabe von printlib und heisst "1:1 drucken". Gesendet
+    # wurde dafuer nichts, also entschied der Filterweg allein, was mit der
+    # Seite geschieht -- und ein generisches IPP-Everywhere-PPD ohne
+    # Randangaben verkleinert gern auf den bedruckbaren Bereich. Auf einem
+    # Etikettenbogen faellt das als Versatz auf, der mit jedem Etikett
+    # waechst, und man sucht den Fehler in der Geometrie.
+    #
+    # Die Zusage heisst print-scaling=none: "do not scale the document to
+    # fit the requested media size" (umgesetzt in cups-filters /
+    # libcupsfilters). Sie wird unbedingt gesendet -- CUPS uebergeht
+    # unbekannte Optionen stillschweigend, ein Drucker ohne diese Option
+    # nimmt also keinen Schaden. Ob er sie kennt, sagt printercaps unter
+    # scaling_option; das ist der Unterschied zwischen "gesendet" und
+    # "angekommen".
+    #
+    # fit/shrink/expand bleiben bei fit-to-page: das laeuft, ist hier nicht
+    # nachgemessen, und eine Umstellung ohne Messung waere genau der
+    # Fehler, den diese Zeile gerade behebt.
     set scale [dict get $opts scale]
     switch -- $scale {
         fit    -
         shrink -
-        expand { lappend lpOpts "fit-to-page" }
-        match    -
-        origsize -
+        expand   { lappend lpOpts "fit-to-page" }
         noscale  -
+        origsize { lappend lpOpts "print-scaling=none" }
+        match    -
         default  { }
     }
 
@@ -2018,7 +2039,28 @@ proc ::printlib::_printercaps_linux {printername} {
             set line [string trim $line]
             if {$line eq ""} continue
             # OptName/Label: Wert1 Wert2 ...
-            if {![regexp {^([A-Za-z][A-Za-z0-9_]*)[^:]*:\s*(.+)$} $line -> opt vals]} {
+            #
+            # 01.10.2026: DER BINDESTRICH FEHLTE IN DER ZEICHENKLASSE.
+            #
+            # Die alte Regex war {^([A-Za-z][A-Za-z0-9_]*)[^:]*:\s*(.+)$}.
+            # Bei einem treiberlosen IPP-Drucker heissen die Optionen aber
+            # genau so -- mit Bindestrich. Gemessen an echten Zeilen:
+            #
+            #   print-color-mode/Print Color Mode: ...  -> erkannt als "print"
+            #   print-scaling/Print Scaling: ...        -> erkannt als "print"
+            #   print-quality/Print Quality: ...        -> erkannt als "print"
+            #
+            # Drei verschiedene Optionen auf EINEN Schluessel, jede
+            # ueberschreibt die vorige. Es gab keinen Fehler und keine
+            # Luecke in der Ausgabe -- nur eine Faehigkeit namens "print",
+            # die nichts bedeutet, und drei echte, die verschwunden waren.
+            # CutMedia und InputSlot kamen durch, weil sie keinen
+            # Bindestrich tragen; darum fiel es bei den Schneidetests nicht
+            # auf.
+            #
+            # Der Name endet am "/" der Beschriftung oder am ":".
+            if {![regexp {^([A-Za-z][A-Za-z0-9_.-]*)(?:/[^:]*)?:\s*(.+)$} \
+                    $line -> opt vals]} {
                 continue
             }
             set values {}
@@ -2090,6 +2132,32 @@ proc ::printlib::_printercaps_linux {printername} {
         break
     }
 
+    # Skalierung -> scaling_option / scaling_values / scaling_default
+    #
+    # 01.10.2026. "-scale noscale" ist die VORGABE von printlib und heisst
+    # "1:1 drucken". Fuer lp wurde dafuer bis hierher GAR NICHTS gesendet --
+    # die Anwendung bat um Originalgroesse, und auf dem Weg nach draussen
+    # stand nichts davon. Was dann geschieht, entscheidet der Filterweg
+    # allein.
+    #
+    # Die Zusage heisst "print-scaling=none" ("do not scale the document to
+    # fit the requested media size"), umgesetzt in cups-filters bzw.
+    # libcupsfilters. Sie wird jetzt gesendet.
+    #
+    # Hier wird AUSSERDEM gelesen, ob der Drucker sie ueberhaupt anbietet.
+    # Der Grund ist derselbe wie beim Schneiden: CUPS uebergeht unbekannte
+    # Optionen stillschweigend. Ohne diese Angabe sieht "gesendet" genauso
+    # aus wie "angekommen", und das ist der Unterschied zwischen einem
+    # Etikett in der richtigen Groesse und einem um vier Prozent zu kleinen.
+    foreach kandidat {print-scaling PageScaling Scaling} {
+        if {![dict exists $lpopts $kandidat]} continue
+        set s [dict get $lpopts $kandidat]
+        dict set result scaling_option  $kandidat
+        dict set result scaling_values  [dict get $s values]
+        dict set result scaling_default [dict get $s default]
+        break
+    }
+
     # ColorModel -> color (boolean)
     if {[dict exists $lpopts ColorModel]} {
         set c [dict get $lpopts ColorModel]
@@ -2135,6 +2203,24 @@ proc ::printlib::_printercaps_linux {printername} {
             dict set result is_default 1
         }
     }
+
+    # 5) Die gelesene Optionstabelle unveraendert mitgeben.
+    #
+    # Die Abbildung oben kennt, was printlib heute braucht: Schacht, Papier,
+    # Duplex, Schneiden, Skalierung, Farbe. Jeder dieser Punkte ist einmal
+    # dadurch entstanden, dass jemand in "lpoptions -l" nachgesehen hat,
+    # statt einen Namen zu raten -- CutMedia am 01.10.2026, nachdem
+    # CutLabel/AutoCut/CutAtEnd wirkungslos geblieben waren.
+    #
+    # Dafuer muss man bisher ein Terminal aufmachen. Mit dieser Tabelle
+    # sieht eine Anwendung, was der Treiber WIRKLICH anbietet, ohne dass
+    # printlib jede Option vorher kennen muss:
+    #
+    #   dict get [printercaps $p] lpoptions   -> {Name {default D values {...}} ...}
+    #
+    # Sie ist auch die einzige Stelle, an der sich pruefen laesst, dass
+    # Optionen mit Bindestrich einzeln ankommen (inv-caps-2.2).
+    dict set result lpoptions $lpopts
 
     return $result
 }
