@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.3
+
+### Fixed
+
+- **pdftocairo (Windows): `-scale noscale` shrank the page.** The backend
+  sent no scaling flag for `noscale`, and `-noshrink` for `shrink` -- the
+  wrong way round. pdftocairo's default is to shrink pages larger than the
+  paper ("By default, pages larger than the paper are shrunk to fit",
+  man pdftocairo), and when printing on Windows the paper is evidently the
+  printable area. Measured on 05.10.2026 on a scanned label sheet (A4,
+  EB-WE-048017, gapless): text pitch 15.93 x 45.7 mm instead of
+  16.9 x 48.5 mm, i.e. 94.2 % on both axes -- 198 of 210 mm, A4 minus about
+  6 mm hardware margin per side. On a sheet of labels that shows up as an
+  offset that grows with every label.
+  `noscale` (the default) now sends `-noshrink`; `shrink` sends nothing
+  (pdftocairo's default); `nocenter` adds `-noshrink`.
+- Tests `inv-command-2.1`..`2.3` pin the three command lines.
+
+Not measured here: whether the Windows driver then places the page at
+the physical edge or at the printable-area origin. If the whole sheet is
+offset by a constant few millimetres afterwards, that is what "Versatz"
+in the application is for -- a constant offset, not a scaling.
+
 ## 0.3.2
 
 Same fault class as the cut in 0.3.1, two more places: an option that was

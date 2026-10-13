@@ -1,4 +1,4 @@
-# printlib 0.3.2
+# printlib 0.3.3
 
 Cross-platform PDF printing library for Tcl/Tk.
 
@@ -12,7 +12,7 @@ Put the Tcl module, named by the `name-version.tm` convention, on a tm path:
 
 ```bash
 mkdir -p ~/.local/lib/tcl8/site-tcl
-cp lib/tm/printlib-0.3.2.tm ~/.local/lib/tcl8/site-tcl/
+cp lib/tm/printlib-0.3.3.tm ~/.local/lib/tcl8/site-tcl/
 ```
 
 Or leave it in place and add the path to Tcl:
@@ -193,6 +193,30 @@ every item** and looks exactly like wrong geometry. Reach for the sheet
 dimensions at that point and the error moves into the profile, where it is
 correct for one printer and wrong everywhere else.
 
+For pdftocairo on Windows the same trap had a second door: without
+`-noshrink` pdftocairo shrinks every page larger than the paper, and the
+paper is the printable area -- an A4 sheet came out at 94.2 %. Since 0.3.3
+`noscale` sends `-noshrink`.
+
+What each `-scale` value puts on the command line, per backend:
+
+| `-scale` | pdftocairo | SumatraPDF | lp (CUPS) | pdfium |
+|---|---|---|---|---|
+| `noscale` (default) | `-noshrink` | `noscale` | `print-scaling=none` | `-fit 0` |
+| `origsize` | `-origpagesizes` | `noscale` | `print-scaling=none` | `-fit 0` |
+| `shrink` | (nothing -- pdftocairo shrinks by default) | `shrink` | `fit-to-page` | `-fit 1` |
+| `fit` | `-expand` | `fit` | `fit-to-page` | `-fit 1` |
+
+`inv-command-1.*` / `2.*` pin these lines. They prove what is **sent**, not
+what is **printed**. Measured on the device ("Raster drucken" in
+etikettendruck, ruler on the 100 mm scale):
+
+| Backend | Printer | 100 mm measured | Date |
+|---|---|---|---|
+| pdftocairo `-noshrink` | | not measured yet | |
+| SumatraPDF `noscale` | | not measured yet | |
+| lp `print-scaling=none` | | not measured yet | |
+
 Since 0.3.2, `noscale` and `origsize` send `print-scaling=none`. It goes out
 unconditionally -- CUPS passes over unknown options silently -- and whether
 the printer knows it is a separate question:
@@ -286,7 +310,10 @@ GDI/DEVMODE in-process -- and `command` says so instead of inventing one.
 
 ## Versions
 
-- **0.3.2** (current): `-scale noscale` actually sends `print-scaling=none`
+- **0.3.3** (current): pdftocairo `-scale noscale` now sends `-noshrink`
+  (it sent nothing, and pdftocairo shrinks to the printable area by default --
+  measured 94.2 % on a label sheet); `shrink` sends nothing.
+- **0.3.2**: `-scale noscale` actually sends `print-scaling=none`
   (it sent nothing); `lpoptions` option names with a hyphen are no longer
   merged onto one key -- on a driverless IPP printer `print-scaling`,
   `print-quality` and `print-color-mode` all became `print`; `printercaps`

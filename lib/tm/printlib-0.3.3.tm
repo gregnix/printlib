@@ -1,4 +1,4 @@
-# printlib-0.3.2.tm
+# printlib-0.3.3.tm
 #
 # Plattformuebergreifende PDF-Druckbibliothek fuer Tcl/Tk
 # Unterstuetzt: pdftocairo (Vektor), SumatraPDF (Bitmap-Fallback)
@@ -47,7 +47,7 @@
 #   - redundantes variable-Statement entfernt
 #   - PowerShell-Ausgabe-Parsing: Style-Fixes
 
-package provide printlib 0.3.2
+package provide printlib 0.3.3
 package require Tcl 8.6-
 
 namespace eval ::printlib {
@@ -740,11 +740,21 @@ proc ::printlib::_cmd_pdftocairo {pdffile opts} {
     }
 
     # Skalierung zuerst bestimmen
-    # pdftocairo-Optionen:
-    #   (nichts)              = noscale: zentriert, nicht skaliert
-    #   -expand               = vergroessern wenn kleiner, ggf. verkleinern
+    # pdftocairo-Optionen (man pdftocairo):
+    #   (nichts)              = pdftocairo-Vorgabe: Seiten, die groesser als
+    #                           das Papier sind, werden VERKLEINERT
+    #   -noshrink             = nicht verkleinern
+    #   -expand               = kleinere Seiten vergroessern
     #   -expand -noshrink     = nur vergroessern
-    #   -noshrink             = nur Verkleinerung verhindern (= shrink-Modus aus)
+    #
+    # 0.3.3: hier stand "(nichts) = noscale: nicht skaliert" und "-noshrink
+    # = shrink". Beides war vertauscht. "Don't scale PDF pages which are
+    # larger than the paper ... By default, pages larger than the paper are
+    # shrunk to fit." Unter Windows ist "Papier" offenbar der bedruckbare
+    # Bereich: gemessen am 05.10.2026 an einem gescannten Etikettenbogen
+    # (A4, EB-WE-048017) schrumpfte der Druck in X und Y gleich auf 94,2 %
+    # -- 198 von 210 mm, also A4 abzueglich rund 6 mm Hardwarerand je Seite.
+    # noscale schickt darum jetzt -noshrink.
     #   -origpagesizes        = origsize: Papier an PDF anpassen
     #   -paper match          = match: Papier = Seitengroesse
     #
@@ -773,12 +783,12 @@ proc ::printlib::_cmd_pdftocairo {pdffile opts} {
         switch -- $scale {
             fit       { lappend cmd -expand }
             expand    { lappend cmd -expand -noshrink }
-            shrink    { lappend cmd -noshrink }
+            shrink    { }
+            noscale   { lappend cmd -noshrink }
             match     { lappend cmd -paper match }
             origsize  { lappend cmd -origpagesizes }
-            nocenter  { lappend cmd -nocenter }
-            noscale   -
-            default   { }
+            nocenter  { lappend cmd -nocenter -noshrink }
+            default   { lappend cmd -noshrink }
         }
 
         # Papier nur bei normalem Drucker und gueltiger pdftocairo-Groesse

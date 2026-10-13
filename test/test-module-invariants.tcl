@@ -940,4 +940,23 @@ PageSize/Media Size: *A4 Letter"]:$::altPath"
     dict exists $caps scaling_option
 } -cleanup {set ::env(PATH) $::altPath} -result 0
 
+# 0.3.3: pdftocairo verkleinert ohne -noshrink jede Seite, die groesser ist
+# als das "Papier" -- unter Windows offenbar der bedruckbare Bereich
+# (gemessen 05.10.2026: Etikettenbogen auf 94,2 % geschrumpft). noscale
+# stand vorher ohne Schalter da, shrink mit -noshrink: vertauscht.
+test inv-command-2.1 {pdftocairo: noscale verbietet das Verkleinern} -body {
+    set c [::printlib::command x.pdf -backend pdftocairo -printer P -paper A4 -scale noscale]
+    list [expr {"-noshrink" in $c}] [expr {"-expand" in $c}]
+} -result {1 0}
+
+test inv-command-2.2 {pdftocairo: shrink laesst die Vorgabe (verkleinern) stehen} -body {
+    set c [::printlib::command x.pdf -backend pdftocairo -printer P -paper A4 -scale shrink]
+    expr {"-noshrink" in $c}
+} -result 0
+
+test inv-command-2.3 {pdftocairo: ohne -scale gilt noscale, also -noshrink} -body {
+    set c [::printlib::command x.pdf -backend pdftocairo -printer P -paper A4]
+    expr {"-noshrink" in $c}
+} -result 1
+
 cleanupTests
