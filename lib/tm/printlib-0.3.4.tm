@@ -1,4 +1,4 @@
-# printlib-0.3.3.tm
+# printlib-0.3.4.tm
 #
 # Plattformuebergreifende PDF-Druckbibliothek fuer Tcl/Tk
 # Unterstuetzt: pdftocairo (Vektor), SumatraPDF (Bitmap-Fallback)
@@ -47,7 +47,7 @@
 #   - redundantes variable-Statement entfernt
 #   - PowerShell-Ausgabe-Parsing: Style-Fixes
 
-package provide printlib 0.3.3
+package provide printlib 0.3.4
 package require Tcl 8.6-
 
 namespace eval ::printlib {
@@ -150,9 +150,11 @@ namespace eval ::printlib {
 #                 pdftocairo: nicht direkt unterstuetzt (DEVMODE)
 #   -cut        auto | on | off | end
 #               Auto-Cut bei Etikettendruckern (z.B. Brother QL).
-#               'on'/'auto' (default) sendet sowohl CutLabel=ON als auch
-#               AutoCut=ON -- gaengige Brother-CUPS-Treiber-Schalter.
-#               'end' nutzt CutAtEnd=ON (nur Job-Ende schneiden).
+#               'auto' (default) schneidet nur, wenn der Treiber eine
+#               Schneide-Option meldet (Etikettendrucker); ein
+#               Bueodrucker bekommt nichts. 'on', 'off', 'end' setzen
+#               die Option ausdruecklich; ohne Auskunft des Treibers
+#               mit den alten Brother-Namen (CutLabel, AutoCut, CutAtEnd).
 #               Treiberspezifisch -- bei abweichendem Treiber per PPD
 #               ueberschreiben.
 #   -ppddir     Verzeichnis fuer .pdftocairo/.sumatra-Konfigdateien
@@ -334,13 +336,14 @@ proc ::printlib::_ppdBackends {} {
 # kommt nichts heraus -- das ist richtig so.
 # -------------------------------------------------------------------------
 proc ::printlib::_cutLpOpts {cutMode optName optValues} {
-    # Ohne Auskunft vom Treiber bleibt nur das alte Raten. Das ist
-    # schlechter als Lesen, aber besser als gar nichts -- und es trifft
-    # die Treiber, fuer die es frueher gedacht war.
+    # Ohne Auskunft vom Treiber bleibt nur das alte Raten, und das nur,
+    # wenn der Aufrufer ausdruecklich schneiden will. Die Vorgabe "auto"
+    # schickt dann nichts: Ein Bueodrucker kennt keine Schneide-Option,
+    # und CutLabel/AutoCut gehoeren nicht in seinen Auftrag (0.3.4).
     if {$optName eq "" || [llength $optValues] == 0} {
         switch -- $cutMode {
             on - always      { return {CutLabel=ON AutoCut=ON} }
-            auto             { return {CutLabel=ON AutoCut=ON} }
+            auto             { return {} }
             off - none - never { return {CutLabel=OFF AutoCut=OFF} }
             end              { return {CutAtEnd=ON} }
             default          { return {} }

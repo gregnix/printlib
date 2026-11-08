@@ -683,6 +683,13 @@ test inv-cut-1.2 {ohne Auskunft bleibt das alte Raten} -body {
          [printlib::_cutLpOpts end "" {}]
 } -result {{CutLabel=ON AutoCut=ON} {CutLabel=OFF AutoCut=OFF} CutAtEnd=ON}
 
+test inv-cut-1.6 {auto ohne Auskunft: Bueodrucker bekommt keine Schneide-Option} -body {
+    # 0.3.4: bis 0.3.3 gingen CutLabel=ON AutoCut=ON an jeden Drucker,
+    # auch an einen ohne Schneidwerk.
+    list [printlib::_cutLpOpts auto "" {}] \
+        [printlib::command bogen.pdf -backend lp -printer kluniversal]
+} -result {{} {lp -d kluniversal -o print-scaling=none -o orientation-requested=3 bogen.pdf}}
+
 test inv-cut-1.3 {ein Wert, den der Treiber nicht hat, wird nicht erfunden} -body {
     # "end" bei einem Treiber, der nur ON/OFF kennt: lieber nichts senden
     # als etwas, das ohnehin uebergangen wird.

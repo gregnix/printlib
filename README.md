@@ -1,4 +1,4 @@
-# printlib 0.3.3
+# printlib 0.3.4
 
 Cross-platform PDF printing library for Tcl/Tk.
 
@@ -12,7 +12,7 @@ Put the Tcl module, named by the `name-version.tm` convention, on a tm path:
 
 ```bash
 mkdir -p ~/.local/lib/tcl8/site-tcl
-cp lib/tm/printlib-0.3.3.tm ~/.local/lib/tcl8/site-tcl/
+cp lib/tm/printlib-0.3.4.tm ~/.local/lib/tcl8/site-tcl/
 ```
 
 Or leave it in place and add the path to Tcl:
@@ -299,7 +299,7 @@ above all the input tray -- deserves a test that costs no sheet:
 
 ```tcl
 printlib::command bogen.pdf -backend lp -printer kluniversal -source manual
-# -> lp -d kluniversal -o InputSlot=Manual -o CutLabel=ON -o AutoCut=ON bogen.pdf
+# -> lp -d kluniversal -o InputSlot=Manual -o print-scaling=none -o orientation-requested=3 bogen.pdf
 ```
 
 Two deliberate differences from `print`: `command` does not require the
@@ -310,7 +310,10 @@ GDI/DEVMODE in-process -- and `command` says so instead of inventing one.
 
 ## Versions
 
-- **0.3.3** (current): pdftocairo `-scale noscale` now sends `-noshrink`
+- **0.3.4** (current): `-cut auto` (the default) sends no cut option
+  unless the driver reports one; office printers no longer get
+  `CutLabel=ON AutoCut=ON`.
+- **0.3.3**: pdftocairo `-scale noscale` now sends `-noshrink`
   (it sent nothing, and pdftocairo shrinks to the printable area by default --
   measured 94.2 % on a label sheet); `shrink` sends nothing.
 - **0.3.2**: `-scale noscale` actually sends `print-scaling=none`

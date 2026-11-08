@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+### Fixed
+
+- **`-cut auto` sent `CutLabel=ON AutoCut=ON` to every printer.** Without
+  a cut option from the driver (any office printer), the default now
+  sends nothing. Explicit `on`, `off` and `end` keep the old Brother names
+  as a fallback.
+- Test `inv-cut-1.6`.
+
 ## 0.3.3
 
 ### Fixed
